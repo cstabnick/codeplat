@@ -1,0 +1,53 @@
+{
+  "addr": "127.0.0.1:8083",
+  "backends": [
+    {
+      "name": "ollama",
+      "kind": "ollama",
+      "url": "http://127.0.0.1:11434",
+      "command": ["ollama", "serve"],
+      "pull_missing": true
+    },
+    {
+      "name": "bonsai",
+      "kind": "openai",
+      "url": "http://192.168.176.1:8080",
+      "command": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                  "$env:BONSAI_HOST='0.0.0.0'; & 'C:\\Users\\cstab\\Bonsai-demo\\scripts\\start_llama_server.ps1'"],
+      "stop_command": ["powershell.exe", "-NoProfile", "-Command",
+                       "Stop-Process -Name llama-server -ErrorAction SilentlyContinue"],
+      "start_timeout_seconds": 600
+    }
+  ],
+  "intent": {
+    "backend": "ollama",
+    "model": "llama3.2:1b"
+  },
+  "default_route": "general",
+  "routes": [
+    {
+      "name": "general",
+      "description": "Conversation, questions, writing, and anything no other route fits.",
+      "backend": "ollama",
+      "model": "llama3:8b"
+    },
+    {
+      "name": "code",
+      "description": "Writing, explaining, reviewing or debugging source code.",
+      "backend": "ollama",
+      "model": "qwen2.5-coder:1.5b"
+    },
+    {
+      "name": "quick",
+      "description": "Greetings and short factual questions with a one-line answer.",
+      "backend": "ollama",
+      "model": "llama3.2:1b"
+    },
+    {
+      "name": "reason",
+      "description": "Hard problems that need careful step-by-step reasoning, planning, maths or long-form analysis.",
+      "backend": "bonsai",
+      "model": "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+    }
+  ]
+}

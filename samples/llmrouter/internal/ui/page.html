@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llmrouter</title>
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<style>
+:root { --fg: #1d1d1f; --bg: #ffffff; --muted: #6b6b70; --line: #d8d8dc; --err: #b00020; --ok: #1e7b34; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e8e8ea; --bg: #1b1b1e; --muted: #9a9aa2; --line: #3a3a40; --err: #ff8a9a; --ok: #7bd38f; }
+}
+body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: var(--fg); background: var(--bg); }
+section { margin-bottom: 2rem; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.1rem; border-bottom: 1px solid var(--line); padding-bottom: 0.25rem; }
+h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 600; }
+form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin: 0.5rem 0; }
+form.stack { display: block; }
+form.inline { display: inline; margin: 0; }
+input, textarea { font: inherit; padding: 0.4rem; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; }
+textarea { width: 100%; min-height: 5rem; box-sizing: border-box; }
+button { font: inherit; padding: 0.3rem 0.7rem; }
+.muted { color: var(--muted); }
+.error { color: var(--err); }
+.note { color: var(--ok); }
+#chat-log { max-height: 24rem; overflow-y: auto; margin-bottom: 0.5rem; }
+.msg { max-width: 85%; padding: 0.5rem 0.75rem; margin: 0.4rem 0; border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.user { margin-left: auto; background: color-mix(in srgb, var(--muted) 15%, var(--bg)); }
+.msg.err { color: var(--err); border-color: var(--err); }
+.meta { display: block; color: var(--muted); margin-top: 0.3rem; }
+</style>
+</head>
+<body>
+<h1>llmrouter</h1>
+
+<section id="backends" hx-get="/" hx-trigger="every 5s" hx-select="#backends" hx-swap="outerHTML">
+  <h2>Backends</h2>
+  {{if .Backends}}
+  <table>
+    <tr><th>Name</th><th>Kind</th><th>Reachable</th><th>Version</th><th>Managed</th><th>Loaded models</th><th>Error</th></tr>
+    {{range .Backends}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.Kind}}</td>
+      <td>{{if .Reachable}}yes{{else}}no{{end}}</td>
+      <td>{{.Version}}</td>
+      <td>{{if .Managed}}yes{{else}}no{{end}}</td>
+      <td>{{range .Loaded}}{{.Name}}<br>{{else}}<span class="muted">none</span>{{end}}</td>
+      <td class="error">{{.Error}}</td>
+    </tr>
+    {{end}}
+  </table>
+  {{else}}
+  <p class="muted">No backends configured.</p>
+  {{end}}
+</section>
+
+<section id="routes">
+  <h2>Routes</h2>
+  <table>
+    <tr><th>Name</th><th>Description</th><th>Backend</th><th>Model</th></tr>
+    {{range .Routes}}
+    <tr>
+      <td>{{.Name}}{{if eq .Name $.Default}} <span class="muted">(default)</span>{{end}}</td>
+      <td>{{.Description}}</td>
+      <td>{{.Backend}}</td>
+      <td>{{.Model}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="4" class="muted">No routes configured.</td></tr>
+    {{end}}
+  </table>
+</section>
+
+<section id="models">
+  <h2>Models</h2>
+  {{if .ModelsNote}}<p class="note">{{.ModelsNote}}</p>{{end}}
+  {{if .ModelsError}}<p class="error">{{.ModelsError}}</p>{{end}}
+  {{range .Models}}{{$b := .}}
+  <h3>{{$b.Name}}</h3>
+  {{if $b.Error}}
+  <p class="error">{{$b.Error}}</p>
+  {{else if not $b.Models}}
+  <p class="muted">No models.</p>
+  {{else}}
+  <table>
+    <tr><th>Model</th><th>Size</th><th>Modified</th><th></th></tr>
+    {{range $b.Models}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.Size}}</td>
+      <td>{{.ModifiedAt.Format "2006-01-02 15:04"}}</td>
+      <td>{{if $b.Manager}}
+        <form class="inline" method="post" action="/models/delete" hx-post="/models/delete" hx-target="#models" hx-select="#models" hx-swap="outerHTML">
+          <input type="hidden" name="backend" value="{{$b.Name}}">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <button type="submit">Delete</button>
+        </form>
+      {{end}}</td>
+    </tr>
+    {{end}}
+  </table>
+  {{end}}
+  {{if $b.Manager}}
+  <form method="post" action="/models/pull" hx-post="/models/pull" hx-target="#models" hx-select="#models" hx-swap="outerHTML">
+    <input type="hidden" name="backend" value="{{$b.Name}}">
+    <input type="text" name="name" placeholder="model name" required>
+    <button type="submit">Pull</button>
+  </form>
+  {{end}}
+  {{end}}
+</section>
+
+<section id="try">
+  <h2>Try routing</h2>
+  <form class="stack" method="post" action="/try" hx-post="/try" hx-target="#try" hx-select="#try" hx-swap="outerHTML">
+    <textarea name="prompt" placeholder="Ask something">{{.Prompt}}</textarea>
+    <div><button type="submit">Route</button></div>
+  </form>
+  {{if .TryError}}<p class="error">{{.TryError}}</p>{{end}}
+  {{with .Try}}
+  <table>
+    <tr><th>Route</th><td>{{.Route}}</td></tr>
+    <tr><th>Backend</th><td>{{.Backend}}</td></tr>
+    <tr><th>Model</th><td>{{.Model}}</td></tr>
+    <tr><th>Fallback</th><td>{{if .Fallback}}yes{{else}}no{{end}}</td></tr>
+    {{if .Error}}<tr><th>Error</th><td class="error">{{.Error}}</td></tr>{{end}}
+    <tr><th>Took</th><td>{{.Took}}</td></tr>
+  </table>
+  {{end}}
+</section>
+
+<section id="chat">
+  <h2>Chat</h2>
+  <div id="chat-log"></div>
+  <form id="chat-form">
+    <textarea name="prompt" rows="2" required placeholder="Ask a question"></textarea>
+    <select id="chat-model">
+      <option value="auto">auto (route by intent)</option>
+    </select>
+    <button type="submit" id="chat-send">Send</button>
+    <button type="button" id="chat-clear">Clear</button>
+  </form>
+  <script>
+  (function () {
+    const history = [];
+    let generation = 0;
+    const log = document.getElementById("chat-log");
+    const form = document.getElementById("chat-form");
+    const input = form.elements["prompt"];
+    const select = document.getElementById("chat-model");
+    const send = document.getElementById("chat-send");
+    const clearBtn = document.getElementById("chat-clear");
+
+    function addMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = "msg " + role;
+      div.appendChild(document.createTextNode(text));
+      log.appendChild(div);
+      return div;
+    }
+
+    function forget(message) {
+      const i = history.indexOf(message);
+      if (i >= 0) history.splice(i, 1);
+    }
+
+    async function ask(userMessage, reply, model) {
+      const gen = generation;
+      const out = reply.firstChild;
+      const meta = reply.querySelector(".meta");
+      let text = "";
+      try {
+        const resp = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({model: model, stream: true, messages: history})
+        });
+        if (!resp.ok) {
+          const detail = await resp.text();
+          reply.classList.add("err");
+          out.data = "Error " + resp.status + ": " + detail;
+          forget(userMessage);
+          return;
+        }
+        const route = resp.headers.get("X-Llmrouter-Route");
+        const backend = resp.headers.get("X-Llmrouter-Backend");
+        const served = resp.headers.get("X-Llmrouter-Model");
+        let label = route ? "route " + route + " · " : "";
+        label += (backend || "?") + "/" + (served || "?");
+        meta.textContent = label;
+
+        const handleLine = function (line) {
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (!line.startsWith("data: ")) return;
+          const data = line.slice(6);
+          if (data === "[DONE]") return;
+          let event;
+          try { event = JSON.parse(data); } catch (e) { return; }
+          const delta = event.choices && event.choices[0] && event.choices[0].delta;
+          const piece = delta && delta.content;
+          if (typeof piece === "string") {
+            text += piece;
+            out.data = text;
+          }
+        };
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, {stream: true});
+          let nl = buffer.indexOf("\n");
+          while (nl >= 0) {
+            handleLine(buffer.slice(0, nl));
+            buffer = buffer.slice(nl + 1);
+            nl = buffer.indexOf("\n");
+          }
+          log.scrollTop = log.scrollHeight;
+        }
+        buffer += decoder.decode();
+        if (buffer) handleLine(buffer);
+
+        if (gen === generation) history.push({role: "assistant", content: text});
+      } catch (err) {
+        reply.classList.add("err");
+        out.data = "Error: " + err.message;
+        forget(userMessage);
+      } finally {
+        send.disabled = false;
+        log.scrollTop = log.scrollHeight;
+        input.focus();
+      }
+    }
+
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      const prompt = input.value;
+      if (send.disabled || prompt.trim() === "") return;
+      const userMessage = {role: "user", content: prompt};
+      history.push(userMessage);
+      input.value = "";
+      addMessage("user", prompt);
+      const reply = addMessage("assistant", "");
+      const meta = document.createElement("small");
+      meta.className = "meta";
+      reply.appendChild(meta);
+      send.disabled = true;
+      ask(userMessage, reply, select.value);
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    clearBtn.addEventListener("click", function () {
+      generation++;
+      history.length = 0;
+      log.textContent = "";
+    });
+
+    fetch("/api/routes")
+      .then(function (r) {
+        if (!r.ok) throw new Error("status " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        (data.routes || []).forEach(function (rt) {
+          const opt = document.createElement("option");
+          opt.value = rt.name;
+          opt.textContent = rt.name;
+          select.appendChild(opt);
+        });
+      })
+      .catch(function () {});
+  })();
+  </script>
+</section>
+<section id="decisions" hx-get="/" hx-trigger="every 5s" hx-select="#decisions" hx-swap="outerHTML">
+  <h2>Recent decisions</h2>
+  {{if .Decisions}}
+  <table>
+    <tr><th>Time</th><th>Route</th><th>Backend</th><th>Model</th><th>Fallback</th><th>Took</th><th>Prompt</th></tr>
+    {{range .Decisions}}
+    <tr>
+      <td>{{clock .At}}</td>
+      <td>{{.Route}}</td>
+      <td>{{.Backend}}</td>
+      <td>{{.Model}}</td>
+      <td>{{if .Fallback}}yes{{else}}no{{end}}{{if .Error}} <span class="error">{{.Error}}</span>{{end}}</td>
+      <td>{{.Took}}</td>
+      <td>{{.Prompt}}</td>
+    </tr>
+    {{end}}
+  </table>
+  {{else}}
+  <p class="muted">No decisions yet.</p>
+  {{end}}
+</section>
+</body>
+</html>

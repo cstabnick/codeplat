@@ -1,0 +1,37 @@
+{
+  "addr": "127.0.0.1:8083",
+  "backends": [
+    {
+      "name": "ollama",
+      "kind": "ollama",
+      "url": "http://127.0.0.1:11434",
+      "command": ["ollama", "serve"],
+      "pull_missing": true
+    }
+  ],
+  "intent": {
+    "backend": "ollama",
+    "model": "llama3.2:1b"
+  },
+  "default_route": "general",
+  "routes": [
+    {
+      "name": "general",
+      "description": "Conversation, questions, writing, and anything no other route fits.",
+      "backend": "ollama",
+      "model": "llama3:8b"
+    },
+    {
+      "name": "code",
+      "description": "Writing, explaining, reviewing or debugging source code.",
+      "backend": "ollama",
+      "model": "qwen2.5-coder:1.5b"
+    },
+    {
+      "name": "quick",
+      "description": "Greetings and short factual questions with a one-line answer.",
+      "backend": "ollama",
+      "model": "llama3.2:1b"
+    }
+  ]
+}

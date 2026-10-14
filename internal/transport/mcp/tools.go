@@ -17,7 +17,10 @@ type tool struct {
 	call func(ctx context.Context, args json.RawMessage) (any, error)
 }
 
-const statusSchema = `{"type":"string","enum":["todo","in_progress","done"]}`
+const (
+	stageSchema  = `{"type":"string","enum":["refinement","implementation","testing"],"description":"which agent loop the issue is waiting on"}`
+	statusSchema = `{"type":"string","enum":["todo","in_progress","done"]}`
+)
 
 func tools(svc *core.Service) []tool {
 	return []tool{
@@ -42,12 +45,13 @@ func tools(svc *core.Service) []tool {
 		},
 		{
 			Name:        "issue_create",
-			Description: "Create an issue in a project. New issues start in status todo.",
+			Description: "Create an issue in a project. New issues start in status todo, in stage refinement unless you pass another stage.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"project_key":{"type":"string"},
 				"title":{"type":"string"},
 				"description":{"type":"string"},
-				"assignee":{"type":"string"}},
+				"assignee":{"type":"string"},
+				"stage":` + stageSchema + `},
 				"required":["project_key","title"]}`),
 			call: typed(func(ctx context.Context, in core.NewIssue) (any, error) {
 				return svc.CreateIssue(ctx, in)
@@ -55,9 +59,10 @@ func tools(svc *core.Service) []tool {
 		},
 		{
 			Name:        "issue_list",
-			Description: "List issues, optionally filtered by project, status and assignee.",
+			Description: "List issues, optionally filtered by project, stage, status and assignee. A loop's queue is its stage with status todo.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"project_key":{"type":"string"},
+				"stage":` + stageSchema + `,
 				"status":` + statusSchema + `,
 				"assignee":{"type":"string"}}}`),
 			call: typed(func(ctx context.Context, in core.IssueFilter) (any, error) {
@@ -78,12 +83,13 @@ func tools(svc *core.Service) []tool {
 		},
 		{
 			Name:        "issue_update",
-			Description: "Change an issue. Only the fields you pass are changed; pass an empty assignee to unassign.",
+			Description: "Change an issue. Only the fields you pass are changed; pass an empty assignee to unassign. To hand an issue to the next loop, set the next stage, status todo and an empty assignee. To finish it, set status done.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"id":{"type":"string"},
 				"title":{"type":"string"},
 				"description":{"type":"string"},
 				"assignee":{"type":"string"},
+				"stage":` + stageSchema + `,
 				"status":` + statusSchema + `},
 				"required":["id"]}`),
 			call: typed(func(ctx context.Context, in struct {
@@ -91,6 +97,44 @@ func tools(svc *core.Service) []tool {
 				core.IssuePatch
 			}) (any, error) {
 				return svc.UpdateIssue(ctx, in.ID, in.IssuePatch)
+			}),
+		},
+		{
+			Name:        "issue_claim",
+			Description: "Take a todo issue: sets it in_progress and assigns it to you. Fails if another worker already took it, in which case pick a different issue. Always claim before working.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"id":{"type":"string"},
+				"assignee":{"type":"string","description":"a name that identifies you, the worker"}},
+				"required":["id","assignee"]}`),
+			call: typed(func(ctx context.Context, in struct {
+				ID       string `json:"id"`
+				Assignee string `json:"assignee"`
+			}) (any, error) {
+				return svc.ClaimIssue(ctx, in.ID, in.Assignee)
+			}),
+		},
+		{
+			Name:        "comment_add",
+			Description: "Add a comment to an issue. Use it to record progress, findings or questions.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"issue_id":{"type":"string","description":"e.g. PLAT-12"},
+				"body":{"type":"string"},
+				"author":{"type":"string","description":"who is commenting"}},
+				"required":["issue_id","body"]}`),
+			call: typed(func(ctx context.Context, in core.NewComment) (any, error) {
+				return svc.AddComment(ctx, in)
+			}),
+		},
+		{
+			Name:        "comment_list",
+			Description: "List an issue's comments, oldest first.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"issue_id":{"type":"string"}},
+				"required":["issue_id"]}`),
+			call: typed(func(ctx context.Context, in struct {
+				IssueID string `json:"issue_id"`
+			}) (any, error) {
+				return svc.ListComments(ctx, in.IssueID)
 			}),
 		},
 	}

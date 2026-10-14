@@ -15,11 +15,15 @@ import (
 const usage = `usage:
   codeplat project create KEY NAME
   codeplat project list
-  codeplat issue create -project KEY -title TITLE [-desc TEXT] [-assignee NAME]
-  codeplat issue list [-project KEY] [-status STATUS] [-assignee NAME]
+  codeplat issue create -project KEY -title TITLE [-desc TEXT] [-assignee NAME] [-stage STAGE]
+  codeplat issue list [-project KEY] [-stage STAGE] [-status STATUS] [-assignee NAME]
   codeplat issue show ID
-  codeplat issue update ID [-title TITLE] [-desc TEXT] [-assignee NAME] [-status STATUS]
+  codeplat issue update ID [-title TITLE] [-desc TEXT] [-assignee NAME] [-stage STAGE] [-status STATUS]
+  codeplat issue claim ID -assignee NAME
+  codeplat issue comment ID -body TEXT [-author NAME]
+  codeplat issue comments ID
 
+STAGE is one of: refinement, implementation, testing
 STATUS is one of: todo, in_progress, done
 `
 
@@ -65,6 +69,12 @@ func (c *command) dispatch(ctx context.Context, args []string) error {
 		return c.issueShow(ctx, rest)
 	case "issue update":
 		return c.issueUpdate(ctx, rest)
+	case "issue claim":
+		return c.issueClaim(ctx, rest)
+	case "issue comment":
+		return c.issueComment(ctx, rest)
+	case "issue comments":
+		return c.issueComments(ctx, rest)
 	default:
 		return errUsage
 	}
@@ -102,6 +112,7 @@ func (c *command) issueCreate(ctx context.Context, args []string) error {
 	fs.StringVar(&in.Title, "title", "", "title")
 	fs.StringVar(&in.Description, "desc", "", "description")
 	fs.StringVar(&in.Assignee, "assignee", "", "assignee")
+	fs.StringVar((*string)(&in.Stage), "stage", "", "stage")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -117,6 +128,7 @@ func (c *command) issueList(ctx context.Context, args []string) error {
 	var f core.IssueFilter
 	fs := c.flagSet("issue list")
 	fs.StringVar(&f.ProjectKey, "project", "", "project key")
+	fs.StringVar((*string)(&f.Stage), "stage", "", "stage")
 	fs.StringVar((*string)(&f.Status), "status", "", "status")
 	fs.StringVar(&f.Assignee, "assignee", "", "assignee")
 	if err := parse(fs, args); err != nil {
@@ -127,9 +139,9 @@ func (c *command) issueList(ctx context.Context, args []string) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(c.out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tSTATUS\tASSIGNEE\tTITLE")
+	fmt.Fprintln(tw, "ID\tSTAGE\tSTATUS\tASSIGNEE\tTITLE")
 	for _, i := range issues {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", i.ID, i.Status, i.Assignee, i.Title)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", i.ID, i.Stage, i.Status, i.Assignee, i.Title)
 	}
 	return tw.Flush()
 }
@@ -150,11 +162,12 @@ func (c *command) issueUpdate(ctx context.Context, args []string) error {
 	if len(args) < 1 {
 		return errUsage
 	}
-	var title, desc, assignee, status string
+	var title, desc, assignee, stage, status string
 	fs := c.flagSet("issue update")
 	fs.StringVar(&title, "title", "", "title")
 	fs.StringVar(&desc, "desc", "", "description")
 	fs.StringVar(&assignee, "assignee", "", "assignee")
+	fs.StringVar(&stage, "stage", "", "stage")
 	fs.StringVar(&status, "status", "", "status")
 	if err := parse(fs, args[1:]); err != nil {
 		return err
@@ -170,6 +183,9 @@ func (c *command) issueUpdate(ctx context.Context, args []string) error {
 			patch.Description = &desc
 		case "assignee":
 			patch.Assignee = &assignee
+		case "stage":
+			s := core.Stage(stage)
+			patch.Stage = &s
 		case "status":
 			s := core.Status(status)
 			patch.Status = &s
@@ -183,10 +199,69 @@ func (c *command) issueUpdate(ctx context.Context, args []string) error {
 	return nil
 }
 
+func (c *command) issueClaim(ctx context.Context, args []string) error {
+	if len(args) < 1 {
+		return errUsage
+	}
+	var assignee string
+	fs := c.flagSet("issue claim")
+	fs.StringVar(&assignee, "assignee", "", "assignee")
+	if err := parse(fs, args[1:]); err != nil {
+		return err
+	}
+	i, err := c.svc.ClaimIssue(ctx, args[0], assignee)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "%s claimed %s\n", i.Assignee, i.ID)
+	return nil
+}
+
+func (c *command) issueComment(ctx context.Context, args []string) error {
+	if len(args) < 1 {
+		return errUsage
+	}
+	in := core.NewComment{IssueID: args[0]}
+	fs := c.flagSet("issue comment")
+	fs.StringVar(&in.Body, "body", "", "comment text")
+	fs.StringVar(&in.Author, "author", "", "author")
+	if err := parse(fs, args[1:]); err != nil {
+		return err
+	}
+	cm, err := c.svc.AddComment(ctx, in)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "added comment #%d to %s\n", cm.Number, cm.IssueID)
+	return nil
+}
+
+func (c *command) issueComments(ctx context.Context, args []string) error {
+	if len(args) != 1 {
+		return errUsage
+	}
+	comments, err := c.svc.ListComments(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	for n, cm := range comments {
+		if n > 0 {
+			fmt.Fprintln(c.out)
+		}
+		author := cm.Author
+		if author == "" {
+			author = "(no author)"
+		}
+		fmt.Fprintf(c.out, "#%d  %s  %s\n%s\n", cm.Number, author, cm.CreatedAt.Format("2006-01-02 15:04:05Z07:00"), cm.Body)
+	}
+	return nil
+}
+
 func (c *command) printIssue(i core.Issue) {
 	tw := tabwriter.NewWriter(c.out, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "ID\t%s\n", i.ID)
 	fmt.Fprintf(tw, "Title\t%s\n", i.Title)
+	fmt.Fprintf(tw, "Stage\t%s\n", i.Stage)
 	fmt.Fprintf(tw, "Status\t%s\n", i.Status)
 	fmt.Fprintf(tw, "Assignee\t%s\n", i.Assignee)
 	fmt.Fprintf(tw, "Created\t%s\n", i.CreatedAt.Format("2006-01-02 15:04:05Z07:00"))

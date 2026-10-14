@@ -11,7 +11,7 @@ import (
 
 var (
 	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("already exists")
+	ErrConflict = errors.New("conflict")
 	ErrInvalid  = errors.New("invalid input")
 )
 
@@ -27,6 +27,20 @@ func (s Status) Valid() bool {
 	return s == StatusTodo || s == StatusInProgress || s == StatusDone
 }
 
+// Stage is which agent loop an issue is waiting on. Status says where the
+// issue is within that stage, so (stage, todo) is that loop's queue.
+type Stage string
+
+const (
+	StageRefinement     Stage = "refinement"
+	StageImplementation Stage = "implementation"
+	StageTesting        Stage = "testing"
+)
+
+func (s Stage) Valid() bool {
+	return s == StageRefinement || s == StageImplementation || s == StageTesting
+}
+
 type Project struct {
 	Key       string    `json:"key"`
 	Name      string    `json:"name"`
@@ -39,6 +53,7 @@ type Issue struct {
 	Number      int       `json:"number"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
+	Stage       Stage     `json:"stage"`
 	Status      Status    `json:"status"`
 	Assignee    string    `json:"assignee"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -60,6 +75,8 @@ type NewIssue struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Assignee    string `json:"assignee"`
+	// Stage defaults to refinement.
+	Stage Stage `json:"stage,omitempty"`
 }
 
 // IssuePatch changes only the fields that are non-nil.
@@ -67,12 +84,28 @@ type IssuePatch struct {
 	Title       *string `json:"title,omitempty"`
 	Description *string `json:"description,omitempty"`
 	Assignee    *string `json:"assignee,omitempty"`
+	Stage       *Stage  `json:"stage,omitempty"`
 	Status      *Status `json:"status,omitempty"`
+}
+
+type Comment struct {
+	IssueID   string    `json:"issue_id"`
+	Number    int       `json:"number"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type NewComment struct {
+	IssueID string `json:"issue_id"`
+	Author  string `json:"author"`
+	Body    string `json:"body"`
 }
 
 // IssueFilter matches issues on every non-empty field.
 type IssueFilter struct {
 	ProjectKey string `json:"project_key,omitempty"`
+	Stage      Stage  `json:"stage,omitempty"`
 	Status     Status `json:"status,omitempty"`
 	Assignee   string `json:"assignee,omitempty"`
 }
@@ -92,4 +125,11 @@ type Store interface {
 	// UpdateIssue applies fn to the stored issue atomically. If fn returns
 	// an error nothing is saved and that error is returned.
 	UpdateIssue(ctx context.Context, id string, fn func(*Issue) error) (Issue, error)
+
+	// AddComment allocates the next number on the comment's issue and
+	// returns the comment with Number set.
+	AddComment(ctx context.Context, c Comment) (Comment, error)
+	// ListComments returns an issue's comments oldest first, or ErrNotFound
+	// if the issue does not exist.
+	ListComments(ctx context.Context, issueID string) ([]Comment, error)
 }

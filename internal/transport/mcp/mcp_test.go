@@ -46,6 +46,13 @@ func TestMCP(t *testing.T) {
 		`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"project_list"}}`,
 		`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"nope","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":10,"method":"resources/list"}`,
+		`{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"comment_add","arguments":{"issue_id":"plat-1","body":"on it","author":"haiku"}}}`,
+		`{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"comment_list","arguments":{"issue_id":"PLAT-1"}}}`,
+		`{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"comment_add","arguments":{"issue_id":"PLAT-1","body":" "}}}`,
+		`{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"issue_create","arguments":{"project_key":"PLAT","title":"Second","stage":"implementation"}}}`,
+		`{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"issue_claim","arguments":{"id":"PLAT-2","assignee":"haiku-1"}}}`,
+		`{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"issue_claim","arguments":{"id":"PLAT-2","assignee":"haiku-2"}}}`,
+		`{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"issue_list","arguments":{"stage":"implementation","status":"in_progress"}}}`,
 		`not json`,
 		`{"jsonrpc":"2.0","id":11,"method":"ping"}`,
 	}, "\n") + "\n"
@@ -57,8 +64,8 @@ func TestMCP(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	// Every line gets a reply except the notification.
-	if len(lines) != 12 {
-		t.Fatalf("got %d replies, want 12:\n%s", len(lines), &out)
+	if len(lines) != 19 {
+		t.Fatalf("got %d replies, want 19:\n%s", len(lines), &out)
 	}
 	replies := make([]reply, len(lines))
 	for n, line := range lines {
@@ -88,8 +95,8 @@ func TestMCP(t *testing.T) {
 	}
 
 	tools := byID(2).Result.Tools
-	if len(tools) != 6 {
-		t.Errorf("got %d tools, want 6", len(tools))
+	if len(tools) != 9 {
+		t.Errorf("got %d tools, want 9", len(tools))
 	}
 	for _, tool := range tools {
 		if tool.InputSchema["type"] != "object" {
@@ -122,7 +129,24 @@ func TestMCP(t *testing.T) {
 	if r := byID(10); r.Error == nil || r.Error.Code != -32601 {
 		t.Errorf("unknown method = %+v", r)
 	}
-	if r := replies[10]; r.ID != nil || r.Error == nil || r.Error.Code != -32700 {
+	var comments []core.Comment
+	if err := json.Unmarshal([]byte(text(13)), &comments); err != nil || len(comments) != 1 || comments[0].Author != "haiku" || comments[0].Number != 1 {
+		t.Errorf("comment_list = %+v, %v", comments, err)
+	}
+	if r := byID(14); !r.Result.IsError || !strings.Contains(text(14), "comment body is required") {
+		t.Errorf("blank comment should be a tool error: %+v", r)
+	}
+	if r := byID(16); r.Result.IsError || !strings.Contains(text(16), `"assignee": "haiku-1"`) {
+		t.Errorf("first claim = %s", text(16))
+	}
+	if r := byID(17); !r.Result.IsError || !strings.Contains(text(17), "not todo") {
+		t.Errorf("second claim should be a tool error: %+v", r)
+	}
+	var inProgress []core.Issue
+	if err := json.Unmarshal([]byte(text(18)), &inProgress); err != nil || len(inProgress) != 1 || inProgress[0].ID != "PLAT-2" {
+		t.Errorf("stage filter = %+v, %v", inProgress, err)
+	}
+	if r := replies[17]; r.ID != nil || r.Error == nil || r.Error.Code != -32700 {
 		t.Errorf("parse error reply = %+v", r)
 	}
 	if r := byID(11); r.Error != nil {

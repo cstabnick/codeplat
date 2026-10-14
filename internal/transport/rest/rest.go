@@ -29,6 +29,9 @@ func NewHandler(svc *core.Service, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /issues", h.listIssues)
 	mux.HandleFunc("GET /issues/{id}", h.getIssue)
 	mux.HandleFunc("PATCH /issues/{id}", h.updateIssue)
+	mux.HandleFunc("POST /issues/{id}/claim", h.claimIssue)
+	mux.HandleFunc("POST /issues/{id}/comments", h.addComment)
+	mux.HandleFunc("GET /issues/{id}/comments", h.listComments)
 	return mux
 }
 
@@ -48,9 +51,10 @@ func (h *handler) listProjects(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) createIssue(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Assignee    string `json:"assignee"`
+		Title       string     `json:"title"`
+		Description string     `json:"description"`
+		Assignee    string     `json:"assignee"`
+		Stage       core.Stage `json:"stage"`
 	}
 	if !h.decode(w, r, &body) {
 		return
@@ -60,6 +64,7 @@ func (h *handler) createIssue(w http.ResponseWriter, r *http.Request) {
 		Title:       body.Title,
 		Description: body.Description,
 		Assignee:    body.Assignee,
+		Stage:       body.Stage,
 	})
 	h.respond(w, http.StatusCreated, i, err)
 }
@@ -68,6 +73,7 @@ func (h *handler) listIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	issues, err := h.svc.ListIssues(r.Context(), core.IssueFilter{
 		ProjectKey: q.Get("project"),
+		Stage:      core.Stage(q.Get("stage")),
 		Status:     core.Status(q.Get("status")),
 		Assignee:   q.Get("assignee"),
 	})
@@ -86,6 +92,38 @@ func (h *handler) updateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	i, err := h.svc.UpdateIssue(r.Context(), r.PathValue("id"), patch)
 	h.respond(w, http.StatusOK, i, err)
+}
+
+func (h *handler) claimIssue(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Assignee string `json:"assignee"`
+	}
+	if !h.decode(w, r, &body) {
+		return
+	}
+	i, err := h.svc.ClaimIssue(r.Context(), r.PathValue("id"), body.Assignee)
+	h.respond(w, http.StatusOK, i, err)
+}
+
+func (h *handler) addComment(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Author string `json:"author"`
+		Body   string `json:"body"`
+	}
+	if !h.decode(w, r, &body) {
+		return
+	}
+	c, err := h.svc.AddComment(r.Context(), core.NewComment{
+		IssueID: r.PathValue("id"),
+		Author:  body.Author,
+		Body:    body.Body,
+	})
+	h.respond(w, http.StatusCreated, c, err)
+}
+
+func (h *handler) listComments(w http.ResponseWriter, r *http.Request) {
+	comments, err := h.svc.ListComments(r.Context(), r.PathValue("id"))
+	h.respond(w, http.StatusOK, comments, err)
 }
 
 func (h *handler) decode(w http.ResponseWriter, r *http.Request, dst any) bool {

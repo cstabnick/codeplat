@@ -16,26 +16,40 @@ import (
 	"codeplat/internal/core"
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS projects (
-	key         TEXT PRIMARY KEY,
-	name        TEXT NOT NULL,
-	next_number INTEGER NOT NULL DEFAULT 1,
-	created_at  TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS issues (
-	id          TEXT PRIMARY KEY,
-	project_key TEXT NOT NULL REFERENCES projects(key),
-	number      INTEGER NOT NULL,
-	title       TEXT NOT NULL,
-	description TEXT NOT NULL,
-	status      TEXT NOT NULL,
-	assignee    TEXT NOT NULL,
-	created_at  TEXT NOT NULL,
-	updated_at  TEXT NOT NULL
-);`
+// migrations run in order, once each; PRAGMA user_version counts how many
+// have been applied. Append new entries; never edit or reorder old ones.
+var migrations = []string{
+	// IF NOT EXISTS because databases created before versioning already
+	// have these tables at user_version 0.
+	`CREATE TABLE IF NOT EXISTS projects (
+		key         TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		next_number INTEGER NOT NULL DEFAULT 1,
+		created_at  TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS issues (
+		id          TEXT PRIMARY KEY,
+		project_key TEXT NOT NULL REFERENCES projects(key),
+		number      INTEGER NOT NULL,
+		title       TEXT NOT NULL,
+		description TEXT NOT NULL,
+		status      TEXT NOT NULL,
+		assignee    TEXT NOT NULL,
+		created_at  TEXT NOT NULL,
+		updated_at  TEXT NOT NULL
+	);`,
+	`CREATE TABLE comments (
+		issue_id   TEXT NOT NULL REFERENCES issues(id),
+		number     INTEGER NOT NULL,
+		author     TEXT NOT NULL,
+		body       TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (issue_id, number)
+	);`,
+	`ALTER TABLE issues ADD COLUMN stage TEXT NOT NULL DEFAULT 'refinement';`,
+}
 
-const issueColumns = `id, project_key, number, title, description, status, assignee, created_at, updated_at`
+const issueColumns = `id, project_key, number, title, description, status, assignee, created_at, updated_at, stage`
 
 type Store struct {
 	db *sql.DB
@@ -54,11 +68,48 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
 	}
 	return &Store{db: db}, nil
+}
+
+func migrate(db *sql.DB) error {
+	for {
+		done, err := migrateNext(db)
+		if err != nil || done {
+			return err
+		}
+	}
+}
+
+// migrateNext applies one pending migration. It reads the version inside
+// the transaction so that processes starting together do not both apply it.
+func migrateNext(db *sql.DB) (done bool, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var version int
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return false, err
+	}
+	if version > len(migrations) {
+		return false, fmt.Errorf("schema version %d is newer than this binary supports (%d)", version, len(migrations))
+	}
+	if version == len(migrations) {
+		return true, nil
+	}
+	if _, err := tx.Exec(migrations[version]); err != nil {
+		return false, fmt.Errorf("migration %d: %w", version+1, err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version+1)); err != nil {
+		return false, err
+	}
+	return false, tx.Commit()
 }
 
 func (s *Store) Close() error {
@@ -73,7 +124,7 @@ func (s *Store) CreateProject(ctx context.Context, p core.Project) error {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("project %s: %w", p.Key, core.ErrConflict)
+		return fmt.Errorf("project %s already exists: %w", p.Key, core.ErrConflict)
 	}
 	return nil
 }
@@ -118,9 +169,9 @@ func (s *Store) CreateIssue(ctx context.Context, i core.Issue) (core.Issue, erro
 	i.ID = core.IssueID(i.ProjectKey, i.Number)
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO issues (`+issueColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO issues (`+issueColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		i.ID, i.ProjectKey, i.Number, i.Title, i.Description, i.Status, i.Assignee,
-		formatTime(i.CreatedAt), formatTime(i.UpdatedAt))
+		formatTime(i.CreatedAt), formatTime(i.UpdatedAt), i.Stage)
 	if err != nil {
 		return core.Issue{}, err
 	}
@@ -137,6 +188,10 @@ func (s *Store) ListIssues(ctx context.Context, f core.IssueFilter) ([]core.Issu
 	if f.ProjectKey != "" {
 		where = append(where, "project_key = ?")
 		args = append(args, f.ProjectKey)
+	}
+	if f.Stage != "" {
+		where = append(where, "stage = ?")
+		args = append(args, f.Stage)
 	}
 	if f.Status != "" {
 		where = append(where, "status = ?")
@@ -183,12 +238,74 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, fn func(*core.Issue)
 		return core.Issue{}, err
 	}
 	_, err = tx.ExecContext(ctx,
-		`UPDATE issues SET title = ?, description = ?, status = ?, assignee = ?, updated_at = ? WHERE id = ?`,
-		i.Title, i.Description, i.Status, i.Assignee, formatTime(i.UpdatedAt), id)
+		`UPDATE issues SET title = ?, description = ?, stage = ?, status = ?, assignee = ?, updated_at = ? WHERE id = ?`,
+		i.Title, i.Description, i.Stage, i.Status, i.Assignee, formatTime(i.UpdatedAt), id)
 	if err != nil {
 		return core.Issue{}, err
 	}
 	return i, tx.Commit()
+}
+
+func (s *Store) AddComment(ctx context.Context, c core.Comment) (core.Comment, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Comment{}, err
+	}
+	defer tx.Rollback()
+
+	if err := issueExists(ctx, tx, c.IssueID); err != nil {
+		return core.Comment{}, err
+	}
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(number), 0) + 1 FROM comments WHERE issue_id = ?`, c.IssueID).Scan(&c.Number)
+	if err != nil {
+		return core.Comment{}, err
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO comments (issue_id, number, author, body, created_at) VALUES (?, ?, ?, ?, ?)`,
+		c.IssueID, c.Number, c.Author, c.Body, formatTime(c.CreatedAt))
+	if err != nil {
+		return core.Comment{}, err
+	}
+	return c, tx.Commit()
+}
+
+func (s *Store) ListComments(ctx context.Context, issueID string) ([]core.Comment, error) {
+	if err := issueExists(ctx, s.db, issueID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT issue_id, number, author, body, created_at FROM comments WHERE issue_id = ? ORDER BY number`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.Comment{}
+	for rows.Next() {
+		var c core.Comment
+		var created string
+		if err := rows.Scan(&c.IssueID, &c.Number, &c.Author, &c.Body, &created); err != nil {
+			return nil, err
+		}
+		if c.CreatedAt, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func issueExists(ctx context.Context, q queryer, id string) error {
+	var one int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM issues WHERE id = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("issue %s: %w", id, core.ErrNotFound)
+	}
+	return err
 }
 
 type scanner interface {
@@ -198,7 +315,7 @@ type scanner interface {
 func scanIssue(id string, row scanner) (core.Issue, error) {
 	var i core.Issue
 	var created, updated string
-	err := row.Scan(&i.ID, &i.ProjectKey, &i.Number, &i.Title, &i.Description, &i.Status, &i.Assignee, &created, &updated)
+	err := row.Scan(&i.ID, &i.ProjectKey, &i.Number, &i.Title, &i.Description, &i.Status, &i.Assignee, &created, &updated, &i.Stage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Issue{}, fmt.Errorf("issue %s: %w", id, core.ErrNotFound)
 	}

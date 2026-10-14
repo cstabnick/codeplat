@@ -8,10 +8,23 @@ A mini issue tracker (projects and issues) with three front doors: a REST API, a
 make build                       # binaries in bin/
 bin/codeplat project create PLAT "Platform"
 bin/codeplat issue create -project PLAT -title "First issue"
+bin/codeplat issue comment PLAT-1 -body "Started on this" -author sam
 bin/codeplat-rest                # REST on the configured address
 bin/codeplat-mcp                 # MCP over stdio
 make test
 ```
+
+## Agent workflow
+
+An issue moves through three stages, each worked by its own agent loop: `refinement`, `implementation`, `testing`. Within a stage it is `todo`, `in_progress` or `done`.
+
+```sh
+bin/codeplat issue list -stage implementation -status todo      # a loop's queue
+bin/codeplat issue claim PLAT-1 -assignee worker-1              # fails if already taken
+bin/codeplat issue update PLAT-1 -stage testing -status todo -assignee ""   # hand off
+```
+
+[prompts/decompose.md](prompts/decompose.md) is the prompt for the planning model: it turns a goal into a roadmap of epics whose issues can be worked in parallel by small models.
 
 ## Environments
 

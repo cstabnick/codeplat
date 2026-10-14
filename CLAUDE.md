@@ -8,3 +8,5 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) first; its Rules section is binding.
 - Only `internal/app` may choose an implementation from config.
 - Write tests through `apptest.New(t)`; do not construct stores or the service by hand in transport tests.
 - When you add a use case, expose it in REST, CLI and MCP together.
+- Schema changes are a new entry appended to `migrations` in `internal/store/sqlite/sqlite.go`.
+- To plan work for other agents, follow [prompts/decompose.md](prompts/decompose.md).

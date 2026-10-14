@@ -16,6 +16,7 @@ type Store struct {
 	projects   map[string]core.Project
 	nextNumber map[string]int
 	issues     map[string]core.Issue
+	comments   map[string][]core.Comment
 }
 
 func New() *Store {
@@ -23,6 +24,7 @@ func New() *Store {
 		projects:   map[string]core.Project{},
 		nextNumber: map[string]int{},
 		issues:     map[string]core.Issue{},
+		comments:   map[string][]core.Comment{},
 	}
 }
 
@@ -30,7 +32,7 @@ func (s *Store) CreateProject(_ context.Context, p core.Project) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.projects[p.Key]; ok {
-		return fmt.Errorf("project %s: %w", p.Key, core.ErrConflict)
+		return fmt.Errorf("project %s already exists: %w", p.Key, core.ErrConflict)
 	}
 	s.projects[p.Key] = p
 	s.nextNumber[p.Key] = 1
@@ -79,6 +81,9 @@ func (s *Store) ListIssues(_ context.Context, f core.IssueFilter) ([]core.Issue,
 		if f.ProjectKey != "" && i.ProjectKey != f.ProjectKey {
 			continue
 		}
+		if f.Stage != "" && i.Stage != f.Stage {
+			continue
+		}
 		if f.Status != "" && i.Status != f.Status {
 			continue
 		}
@@ -105,4 +110,24 @@ func (s *Store) UpdateIssue(_ context.Context, id string, fn func(*core.Issue) e
 	}
 	s.issues[id] = i
 	return i, nil
+}
+
+func (s *Store) AddComment(_ context.Context, c core.Comment) (core.Comment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.issues[c.IssueID]; !ok {
+		return core.Comment{}, fmt.Errorf("issue %s: %w", c.IssueID, core.ErrNotFound)
+	}
+	c.Number = len(s.comments[c.IssueID]) + 1
+	s.comments[c.IssueID] = append(s.comments[c.IssueID], c)
+	return c, nil
+}
+
+func (s *Store) ListComments(_ context.Context, issueID string) ([]core.Comment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.issues[issueID]; !ok {
+		return nil, fmt.Errorf("issue %s: %w", issueID, core.ErrNotFound)
+	}
+	return append([]core.Comment{}, s.comments[issueID]...), nil
 }

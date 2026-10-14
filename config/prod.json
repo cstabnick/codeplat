@@ -1,0 +1,7 @@
+{
+  "env": "prod",
+  "log": { "level": "info" },
+  "store": { "driver": "sqlite", "path": "codeplat.db" },
+  "http": { "addr": ":8080" },
+  "clock": {}
+}

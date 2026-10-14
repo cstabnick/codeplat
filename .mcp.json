@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "codeplat": {
+      "command": "bin/codeplat-mcp"
+    }
+  }
+}

@@ -531,4 +531,183 @@ func Run(t *testing.T, newStore func(t *testing.T) core.Store) {
 			t.Fatalf("failed calls recorded events: LastEventID = %d, %v; want 4", last, err)
 		}
 	})
+
+	t.Run("parent", func(t *testing.T) {
+		s := seed(t)
+		goal, err := s.CreateIssue(ctx, newIssue("AAA", "goal"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := newIssue("AAA", "child")
+		in.Parent = goal.ID
+		child, err := s.CreateIssue(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if child.Parent != "AAA-1" {
+			t.Fatalf("CreateIssue returned parent %q; want AAA-1", child.Parent)
+		}
+		plain, err := s.CreateIssue(ctx, newIssue("AAA", "plain"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetIssue(ctx, child.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Parent != "AAA-1" {
+			t.Fatalf("GetIssue(child) parent = %q; want AAA-1", got.Parent)
+		}
+		got, err = s.GetIssue(ctx, plain.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Parent != "" {
+			t.Fatalf("GetIssue(plain) parent = %q; want empty", got.Parent)
+		}
+
+		for _, parent := range []string{"AAA-2", ""} {
+			if _, err := s.UpdateIssue(ctx, plain.ID, func(i *core.Issue) error {
+				i.Parent = parent
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.GetIssue(ctx, plain.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Parent != parent {
+				t.Fatalf("after UpdateIssue parent = %q; want %q", got.Parent, parent)
+			}
+		}
+
+		// AAA-1 is the goal. AAA-4, AAA-6 and AAA-8 are its parts, AAA-7 is a
+		// part of AAA-2, and AAA-5 has no parent.
+		for _, in := range []struct {
+			parent string
+			status core.Status
+		}{
+			{"AAA-1", core.StatusTodo},
+			{"", core.StatusTodo},
+			{"AAA-1", core.StatusDone},
+			{"AAA-2", core.StatusTodo},
+			{"AAA-1", core.StatusTodo},
+		} {
+			i := newIssue("AAA", "part")
+			i.Parent, i.Status = in.parent, in.status
+			if _, err := s.CreateIssue(ctx, i); err != nil {
+				t.Fatal(err)
+			}
+		}
+		listed := func(f core.IssueFilter) []string {
+			t.Helper()
+			issues, err := s.ListIssues(ctx, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := []string{}
+			for _, i := range issues {
+				got = append(got, i.ID)
+			}
+			return got
+		}
+		if got := listed(core.IssueFilter{Parent: "AAA-1"}); !reflect.DeepEqual(got, []string{"AAA-2", "AAA-4", "AAA-6", "AAA-8"}) {
+			t.Fatalf("ListIssues(parent AAA-1) = %v; want [AAA-2 AAA-4 AAA-6 AAA-8]", got)
+		}
+		if got := listed(core.IssueFilter{Parent: "AAA-1", Status: core.StatusTodo}); !reflect.DeepEqual(got, []string{"AAA-2", "AAA-4", "AAA-8"}) {
+			t.Fatalf("ListIssues(parent AAA-1, todo) = %v; want [AAA-2 AAA-4 AAA-8]", got)
+		}
+		if got := listed(core.IssueFilter{Parent: "AAA-9"}); len(got) != 0 {
+			t.Fatalf("ListIssues(parent AAA-9) = %v; want none", got)
+		}
+	})
+
+	t.Run("epics", func(t *testing.T) {
+		s := seed(t)
+		if epics, err := s.ListEpics(ctx, ""); err != nil || epics == nil || len(epics) != 0 {
+			t.Fatalf("new store ListEpics = %v, %v; want empty non-nil", epics, err)
+		}
+		before, err := s.LastEventID(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetEpic(ctx, core.Epic{ProjectKey: "NOPE", Number: 1, Name: "x"}, t0); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("SetEpic in missing project = %v; want ErrNotFound", err)
+		}
+		if last, err := s.LastEventID(ctx); err != nil || last != before {
+			t.Fatalf("failed SetEpic recorded events: LastEventID = %d, %v; want %d", last, err, before)
+		}
+		if epics, err := s.ListEpics(ctx, ""); err != nil || len(epics) != 0 {
+			t.Fatalf("failed SetEpic stored an epic: %v, %v", epics, err)
+		}
+
+		set := func(project, parent string, number int, name string, at time.Time) {
+			t.Helper()
+			if err := s.SetEpic(ctx, core.Epic{ProjectKey: project, Parent: parent, Number: number, Name: name}, at); err != nil {
+				t.Fatalf("SetEpic(%s, %q, %d): %v", project, parent, number, err)
+			}
+		}
+		checkEpics := func(name string, got []core.Epic, want []core.Epic) {
+			t.Helper()
+			if got == nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s = %+v; want %+v", name, got, want)
+			}
+		}
+
+		at := []time.Time{t0.Add(time.Minute), t0.Add(2 * time.Minute), t0.Add(3 * time.Minute), t0.Add(4 * time.Minute)}
+		set("AAA", "", 2, "Later", at[0])
+		set("AAA", "AAA-1", 1, "First", at[1])
+		set("AAA", "", 1, "Start", at[2])
+		set("BBB", "", 1, "Other", at[3])
+
+		events, err := s.EventsSince(ctx, before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantEvents := []core.Event{
+			{ID: before + 1, Type: core.EventEpicSet, ProjectKey: "AAA", IssueID: "", At: at[0]},
+			{ID: before + 2, Type: core.EventEpicSet, ProjectKey: "AAA", IssueID: "AAA-1", At: at[1]},
+			{ID: before + 3, Type: core.EventEpicSet, ProjectKey: "AAA", IssueID: "", At: at[2]},
+			{ID: before + 4, Type: core.EventEpicSet, ProjectKey: "BBB", IssueID: "", At: at[3]},
+		}
+		if len(events) != len(wantEvents) {
+			t.Fatalf("SetEpic events = %+v; want %d", events, len(wantEvents))
+		}
+		for n := range wantEvents {
+			g, w := events[n], wantEvents[n]
+			if g.ID != w.ID || g.Type != w.Type || g.ProjectKey != w.ProjectKey || g.IssueID != w.IssueID || !g.At.Equal(w.At) {
+				t.Fatalf("event %d = %+v; want %+v", n, g, w)
+			}
+		}
+
+		checkEpics(`ListEpics("AAA")`, mustListEpics(t, s, "AAA"), []core.Epic{
+			{ProjectKey: "AAA", Parent: "", Number: 1, Name: "Start"},
+			{ProjectKey: "AAA", Parent: "", Number: 2, Name: "Later"},
+			{ProjectKey: "AAA", Parent: "AAA-1", Number: 1, Name: "First"},
+		})
+		checkEpics(`ListEpics("")`, mustListEpics(t, s, ""), []core.Epic{
+			{ProjectKey: "AAA", Parent: "", Number: 1, Name: "Start"},
+			{ProjectKey: "AAA", Parent: "", Number: 2, Name: "Later"},
+			{ProjectKey: "AAA", Parent: "AAA-1", Number: 1, Name: "First"},
+			{ProjectKey: "BBB", Parent: "", Number: 1, Name: "Other"},
+		})
+
+		set("AAA", "", 1, "Renamed", at[0])
+		checkEpics(`ListEpics("AAA") after rename`, mustListEpics(t, s, "AAA"), []core.Epic{
+			{ProjectKey: "AAA", Parent: "", Number: 1, Name: "Renamed"},
+			{ProjectKey: "AAA", Parent: "", Number: 2, Name: "Later"},
+			{ProjectKey: "AAA", Parent: "AAA-1", Number: 1, Name: "First"},
+		})
+	})
+}
+
+// mustListEpics lists the epics of projectKey, failing the test on error.
+func mustListEpics(t *testing.T, s core.Store, projectKey string) []core.Epic {
+	t.Helper()
+	epics, err := s.ListEpics(context.Background(), projectKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return epics
 }

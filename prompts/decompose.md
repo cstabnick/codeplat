@@ -36,7 +36,7 @@ Use these techniques, in this order of preference:
 
 ### Dependencies
 
-An issue may declare that it depends on another issue in the same epic. Treat this as a last resort. A dependency turns parallel work back into a queue, and the worker behind it sits idle. Before adding one, try each technique above. If you still need it, say in one sentence why none of them worked. An issue never needs to declare a dependency on an earlier epic, because the roadmap order already covers that.
+An issue may declare that it depends on another issue in the same epic. Treat this as a last resort. A dependency turns parallel work back into a queue, and the worker behind it sits idle. Before adding one, try each technique above. If you still need it, say in one sentence why none of them worked. An issue never needs to declare a dependency on an earlier epic, because the tracker holds an epic back until the earlier epics of its goal are done.
 
 ## Sizing an issue
 
@@ -82,6 +82,8 @@ The interfaces this issue provides or must match, verbatim.
 What is nearby that the worker should not touch, especially files another issue owns.
 ```
 
+Set the same epic number and dependencies as fields when you create the issue, so the tracker can order the work.
+
 "Done when" needs at least one command the worker can run, scoped so that it can pass before the rest of the epic lands. Choose commands that leave nothing behind in the repository: for example `go build -o /dev/null ./cmd/api`, since a plain `go build ./cmd/api` drops a binary in the working directory.
 
 ## Before you decompose
@@ -105,10 +107,12 @@ Before you record anything, go through each epic:
 ## Record the plan
 
 1. Write the roadmap to `docs/roadmaps/<short-name>.md`: the goal, then each epic in order with one line stating what is true when it is done, followed by its issues in full.
-2. Create the issues of the **first epic only** in codeplat with `issue_create`, in stage `refinement`. Ask which project key to use if you were not told.
-3. Report the roadmap's shape: how many epics, how many issues in each, and every dependency with its reason.
+2. Create one issue for the goal itself, or use the issue you were given for it. Put it in stage `testing`: it leaves every queue while its parts are open, and comes back for a final check when they are all done. Ask which project key to use if you were not told.
+3. Name each epic under the goal: `bin/codeplat epic set -project KEY -parent GOAL-ID -number N -name NAME`.
+4. Create every issue of every epic, in stage `refinement`, as a part of the goal: `bin/codeplat issue create -project KEY -title TITLE -desc TEXT -parent GOAL-ID -epic N`, adding `-depends-on IDS` for a dependency inside its epic. The same fields exist on the `issue_create` and `epic_set` MCP tools.
+5. Report the roadmap's shape: how many epics, how many issues in each, and every dependency with its reason.
 
-Later epics stay in the roadmap file until the epic before them is done. The tracker has no epics yet, so an issue created early would be picked up early. Holding them back also lets you re-check each epic against the code as it then stands, since earlier work often changes a detail.
+The tracker holds the later epics back: an issue is in a queue only when every issue of the earlier epics of its goal is done, and every issue it depends on is done. So create them all now. When an epic finishes, re-check the next epic's issues against the code as it then stands and correct their descriptions, since earlier work often changes a detail.
 
 ## Illustration
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -146,5 +147,40 @@ func TestFromEnvironmentReadsTokens(t *testing.T) {
 	t.Setenv("CODEPLAT_TOKENS", "not json")
 	if _, err := FromEnvironment(); err == nil {
 		t.Error("invalid CODEPLAT_TOKENS: want error")
+	}
+}
+
+func TestCheckoutDataDir(t *testing.T) {
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	exe := filepath.Join(root, "bin", "codeplat")
+	if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if dir, ok := checkoutDataDir(exe); ok {
+		t.Errorf("no data directory: got %q, want none", dir)
+	}
+
+	data := filepath.Join(root, "data")
+	if err := os.Mkdir(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if dir, ok := checkoutDataDir(exe); !ok || dir != data {
+		t.Errorf("checkout with data directory: got %q, %v; want %q", dir, ok, data)
+	}
+
+	// Only a binary in a directory named bin belongs to a checkout.
+	elsewhere := filepath.Join(root, "codeplat")
+	if err := os.WriteFile(elsewhere, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if dir, ok := checkoutDataDir(elsewhere); ok {
+		t.Errorf("binary outside bin: got %q, want none", dir)
 	}
 }

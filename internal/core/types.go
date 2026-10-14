@@ -59,9 +59,13 @@ type Issue struct {
 	Stage       Stage  `json:"stage"`
 	Status      Status `json:"status"`
 	Assignee    string `json:"assignee"`
+	// Parent is the ID of the goal this issue is part of, or "" for none.
+	// A goal and its parts are in the same project, and goals do not nest.
+	Parent string `json:"parent"`
 	// Epic is the number of the epic this issue belongs to within its
-	// project, from 1 upward. Zero means no epic. Epic n waits for every
-	// issue of the same project in epics 1 to n-1 to be done.
+	// parent, from 1 upward. Zero means no epic. Issues without a parent
+	// count their epics within the project. Epic n waits for every issue
+	// with the same project and parent in epics 1 to n-1 to be done.
 	Epic int `json:"epic"`
 	// DependsOn lists the IDs of issues that must be done before this one
 	// starts.
@@ -87,6 +91,8 @@ type NewIssue struct {
 	Assignee    string `json:"assignee"`
 	// Stage defaults to refinement.
 	Stage Stage `json:"stage,omitempty"`
+	// Parent is optional; see Issue.
+	Parent string `json:"parent,omitempty"`
 	// Epic and DependsOn are optional; see Issue.
 	Epic      int      `json:"epic,omitempty"`
 	DependsOn []string `json:"depends_on,omitempty"`
@@ -99,6 +105,7 @@ type IssuePatch struct {
 	Assignee    *string   `json:"assignee,omitempty"`
 	Stage       *Stage    `json:"stage,omitempty"`
 	Status      *Status   `json:"status,omitempty"`
+	Parent      *string   `json:"parent,omitempty"`
 	Epic        *int      `json:"epic,omitempty"`
 	DependsOn   *[]string `json:"depends_on,omitempty"`
 }
@@ -117,12 +124,23 @@ type NewComment struct {
 	Body    string `json:"body"`
 }
 
+// Epic names one epic. Parent is the goal the epic belongs to, or ""
+// for the epics of a project's issues that have no parent.
+type Epic struct {
+	ProjectKey string `json:"project_key"`
+	Parent     string `json:"parent"`
+	Number     int    `json:"number"`
+	Name       string `json:"name"`
+}
+
 // IssueFilter matches issues on every non-empty field.
 type IssueFilter struct {
 	ProjectKey string `json:"project_key,omitempty"`
 	Stage      Stage  `json:"stage,omitempty"`
 	Status     Status `json:"status,omitempty"`
 	Assignee   string `json:"assignee,omitempty"`
+	// Parent keeps only the issues whose Parent is this ID.
+	Parent string `json:"parent,omitempty"`
 	// Ready keeps only issues for which BlockedBy returns nothing. Stores
 	// ignore it; Service.ListIssues applies it before cutting the page.
 	Ready bool `json:"ready,omitempty"`
@@ -138,6 +156,7 @@ const (
 	EventIssueCreated   EventType = "issue.created"
 	EventIssueUpdated   EventType = "issue.updated"
 	EventCommentAdded   EventType = "comment.added"
+	EventEpicSet        EventType = "epic.set"
 )
 
 // Event records that something changed. Stores append one for every
@@ -152,7 +171,7 @@ type Event struct {
 
 // Store is the persistence port. Implementations return errors wrapping
 // ErrNotFound and ErrConflict, and must pass storetest.Run. Every successful
-// CreateProject, CreateIssue, UpdateIssue and AddComment records exactly one Event.
+// CreateProject, CreateIssue, UpdateIssue, AddComment and SetEpic records exactly one Event.
 type Store interface {
 	CreateProject(ctx context.Context, p Project) error
 	ListProjects(ctx context.Context) ([]Project, error)
@@ -173,6 +192,16 @@ type Store interface {
 	// ListComments returns an issue's comments oldest first, or ErrNotFound
 	// if the issue does not exist.
 	ListComments(ctx context.Context, issueID string) ([]Comment, error)
+
+	// SetEpic stores e, replacing the name of an epic that already has the
+	// same ProjectKey, Parent and Number. It returns ErrNotFound if the
+	// project does not exist. It records one Event of type EventEpicSet
+	// with e.ProjectKey, IssueID e.Parent and time at.
+	SetEpic(ctx context.Context, e Epic, at time.Time) error
+	// ListEpics returns the epics of a project ordered by Parent, then
+	// Number. An empty projectKey lists every project's epics, ordered by
+	// ProjectKey first. It never returns nil.
+	ListEpics(ctx context.Context, projectKey string) ([]Epic, error)
 
 	// EventsSince returns the events whose ID is greater than after, oldest
 	// first. It never returns nil.

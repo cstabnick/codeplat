@@ -57,9 +57,17 @@ var migrations = []string{
 	);`,
 	`ALTER TABLE issues ADD COLUMN epic INTEGER NOT NULL DEFAULT 0;`,
 	`ALTER TABLE issues ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]';`,
+	`ALTER TABLE issues ADD COLUMN parent TEXT NOT NULL DEFAULT '';`,
+	`CREATE TABLE epics (
+		project_key TEXT NOT NULL REFERENCES projects(key),
+		parent      TEXT NOT NULL,
+		number      INTEGER NOT NULL,
+		name        TEXT NOT NULL,
+		PRIMARY KEY (project_key, parent, number)
+	);`,
 }
 
-const issueColumns = `id, project_key, number, title, description, status, assignee, created_at, updated_at, stage, epic, depends_on`
+const issueColumns = `id, project_key, number, title, description, status, assignee, created_at, updated_at, stage, epic, depends_on, parent`
 
 // encodeDependsOn returns the JSON array text for ids; nil is "[]".
 func encodeDependsOn(ids []string) (string, error) {
@@ -134,7 +142,12 @@ func migrateNext(db *sql.DB) (done bool, err error) {
 	return false, tx.Commit()
 }
 
+// Close folds the write-ahead log into the database file before closing, so
+// the file alone holds everything written so far and can be copied or
+// committed. The checkpoint is passive: it never waits for another process,
+// and whatever it could not fold stays in the log for the next close.
 func (s *Store) Close() error {
+	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
 	return s.db.Close()
 }
 
@@ -207,9 +220,9 @@ func (s *Store) CreateIssue(ctx context.Context, i core.Issue) (core.Issue, erro
 	}
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO issues (`+issueColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO issues (`+issueColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		i.ID, i.ProjectKey, i.Number, i.Title, i.Description, i.Status, i.Assignee,
-		formatTime(i.CreatedAt), formatTime(i.UpdatedAt), i.Stage, i.Epic, dependsOn)
+		formatTime(i.CreatedAt), formatTime(i.UpdatedAt), i.Stage, i.Epic, dependsOn, i.Parent)
 	if err != nil {
 		return core.Issue{}, err
 	}
@@ -241,6 +254,10 @@ func (s *Store) ListIssues(ctx context.Context, f core.IssueFilter) ([]core.Issu
 	if f.Assignee != "" {
 		where = append(where, "assignee = ?")
 		args = append(args, f.Assignee)
+	}
+	if f.Parent != "" {
+		where = append(where, "parent = ?")
+		args = append(args, f.Parent)
 	}
 	query := `SELECT ` + issueColumns + ` FROM issues`
 	if len(where) > 0 {
@@ -297,8 +314,8 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, fn func(*core.Issue)
 		return core.Issue{}, err
 	}
 	_, err = tx.ExecContext(ctx,
-		`UPDATE issues SET title = ?, description = ?, stage = ?, status = ?, assignee = ?, updated_at = ?, epic = ?, depends_on = ? WHERE id = ?`,
-		i.Title, i.Description, i.Stage, i.Status, i.Assignee, formatTime(i.UpdatedAt), i.Epic, dependsOn, id)
+		`UPDATE issues SET title = ?, description = ?, stage = ?, status = ?, assignee = ?, updated_at = ?, epic = ?, depends_on = ?, parent = ? WHERE id = ?`,
+		i.Title, i.Description, i.Stage, i.Status, i.Assignee, formatTime(i.UpdatedAt), i.Epic, dependsOn, i.Parent, id)
 	if err != nil {
 		return core.Issue{}, err
 	}
@@ -393,6 +410,57 @@ func (s *Store) LastEventID(ctx context.Context) (int64, error) {
 	return id, err
 }
 
+func (s *Store) SetEpic(ctx context.Context, e core.Epic, at time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var one int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM projects WHERE key = ?`, e.ProjectKey).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("project %s: %w", e.ProjectKey, core.ErrNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO epics (project_key, parent, number, name) VALUES (?, ?, ?, ?) ON CONFLICT (project_key, parent, number) DO UPDATE SET name = excluded.name`,
+		e.ProjectKey, e.Parent, e.Number, e.Name)
+	if err != nil {
+		return err
+	}
+	if err := recordEvent(ctx, tx, core.EventEpicSet, e.ProjectKey, e.Parent, at); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ListEpics(ctx context.Context, projectKey string) ([]core.Epic, error) {
+	query := `SELECT project_key, parent, number, name FROM epics`
+	var args []any
+	if projectKey != "" {
+		query += ` WHERE project_key = ?`
+		args = append(args, projectKey)
+	}
+	query += ` ORDER BY project_key, parent, number`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.Epic{}
+	for rows.Next() {
+		var e core.Epic
+		if err := rows.Scan(&e.ProjectKey, &e.Parent, &e.Number, &e.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // recordEvent appends an event inside the caller's transaction, so the event
 // commits if and only if the change does.
 func recordEvent(ctx context.Context, tx *sql.Tx, t core.EventType, projectKey, issueID string, at time.Time) error {
@@ -422,7 +490,7 @@ type scanner interface {
 func scanIssue(id string, row scanner) (core.Issue, error) {
 	var i core.Issue
 	var created, updated, dependsOn string
-	err := row.Scan(&i.ID, &i.ProjectKey, &i.Number, &i.Title, &i.Description, &i.Status, &i.Assignee, &created, &updated, &i.Stage, &i.Epic, &dependsOn)
+	err := row.Scan(&i.ID, &i.ProjectKey, &i.Number, &i.Title, &i.Description, &i.Status, &i.Assignee, &created, &updated, &i.Stage, &i.Epic, &dependsOn, &i.Parent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Issue{}, fmt.Errorf("issue %s: %w", id, core.ErrNotFound)
 	}

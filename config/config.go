@@ -126,11 +126,17 @@ func fromEnvironment() (Config, error) {
 	return Load(env)
 }
 
-// dataDir is CODEPLAT_DATA_DIR, else $XDG_DATA_HOME/codeplat, else
-// ~/.local/share/codeplat.
+// dataDir is CODEPLAT_DATA_DIR, else the data directory of the checkout the
+// binary was built in (see checkoutDataDir), else $XDG_DATA_HOME/codeplat,
+// else ~/.local/share/codeplat.
 func dataDir() (string, error) {
 	if dir := os.Getenv("CODEPLAT_DATA_DIR"); dir != "" {
 		return filepath.Abs(dir)
+	}
+	if exe, err := os.Executable(); err == nil {
+		if dir, ok := checkoutDataDir(exe); ok {
+			return dir, nil
+		}
 	}
 	if dir := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(dir) {
 		return filepath.Join(dir, "codeplat"), nil
@@ -140,6 +146,25 @@ func dataDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".local", "share", "codeplat"), nil
+}
+
+// checkoutDataDir returns ROOT/data when exe is ROOT/bin/NAME and ROOT/data
+// is a directory. A checkout opts in by having a data directory, so its
+// database lives beside the code and can be committed with it; a binary
+// installed anywhere else is unaffected.
+func checkoutDataDir(exe string) (string, bool) {
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	bin := filepath.Dir(exe)
+	if filepath.Base(bin) != "bin" {
+		return "", false
+	}
+	dir := filepath.Join(filepath.Dir(bin), "data")
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", false
+	}
+	return dir, true
 }
 
 // Load returns the embedded config for the named environment.

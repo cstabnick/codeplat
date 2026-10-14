@@ -16,14 +16,16 @@ import (
 const usage = `usage:
   codeplat project create KEY NAME
   codeplat project list
-  codeplat issue create -project KEY -title TITLE [-desc TEXT] [-assignee NAME] [-stage STAGE] [-epic N] [-depends-on IDS]
-  codeplat issue list [-project KEY] [-stage STAGE] [-status STATUS] [-assignee NAME] [-ready] [-limit N] [-offset N]
+  codeplat issue create -project KEY -title TITLE [-desc TEXT] [-assignee NAME] [-stage STAGE] [-epic N] [-depends-on IDS] [-parent ID]
+  codeplat issue list [-project KEY] [-stage STAGE] [-status STATUS] [-assignee NAME] [-ready] [-parent ID] [-limit N] [-offset N]
   codeplat issue show ID
-  codeplat issue update ID [-title TITLE] [-desc TEXT] [-assignee NAME] [-stage STAGE] [-status STATUS] [-epic N] [-depends-on IDS]
+  codeplat issue update ID [-title TITLE] [-desc TEXT] [-assignee NAME] [-stage STAGE] [-status STATUS] [-epic N] [-depends-on IDS] [-parent ID]
   codeplat issue claim ID -assignee NAME
   codeplat issue block ID -author NAME -reason TEXT
   codeplat issue comment ID -body TEXT [-author NAME]
   codeplat issue comments ID [-limit N] [-offset N]
+  codeplat epic set -project KEY -number N -name NAME [-parent ID]
+  codeplat epic list -project KEY
 
 STAGE is one of: refinement, implementation, testing
 STATUS is one of: todo, in_progress, done, blocked
@@ -81,6 +83,10 @@ func (c *command) dispatch(ctx context.Context, args []string) error {
 		return c.issueComment(ctx, rest)
 	case "issue comments":
 		return c.issueComments(ctx, rest)
+	case "epic set":
+		return c.epicSet(ctx, rest)
+	case "epic list":
+		return c.epicList(ctx, rest)
 	default:
 		return errUsage
 	}
@@ -120,6 +126,7 @@ func (c *command) issueCreate(ctx context.Context, args []string) error {
 	fs.StringVar(&in.Assignee, "assignee", "", "assignee")
 	fs.StringVar((*string)(&in.Stage), "stage", "", "stage")
 	fs.IntVar(&in.Epic, "epic", 0, "epic number, 0 for none")
+	fs.StringVar(&in.Parent, "parent", "", "parent issue ID")
 	var dependsOn string
 	fs.StringVar(&dependsOn, "depends-on", "", "comma-separated issue IDs this one waits for")
 	if err := parse(fs, args); err != nil {
@@ -142,6 +149,7 @@ func (c *command) issueList(ctx context.Context, args []string) error {
 	fs.StringVar((*string)(&f.Status), "status", "", "status")
 	fs.StringVar(&f.Assignee, "assignee", "", "assignee")
 	fs.BoolVar(&f.Ready, "ready", false, "only issues that nothing blocks")
+	fs.StringVar(&f.Parent, "parent", "", "only issues whose parent is this ID")
 	fs.IntVar(&f.Limit, "limit", 0, "at most this many issues (default 50, max 200)")
 	fs.IntVar(&f.Offset, "offset", 0, "skip this many issues")
 	if err := parse(fs, args); err != nil {
@@ -175,7 +183,7 @@ func (c *command) issueUpdate(ctx context.Context, args []string) error {
 	if len(args) < 1 {
 		return errUsage
 	}
-	var title, desc, assignee, stage, status, dependsOn string
+	var title, desc, assignee, stage, status, dependsOn, parent string
 	var epic int
 	fs := c.flagSet("issue update")
 	fs.StringVar(&title, "title", "", "title")
@@ -185,6 +193,7 @@ func (c *command) issueUpdate(ctx context.Context, args []string) error {
 	fs.StringVar(&status, "status", "", "status")
 	fs.IntVar(&epic, "epic", 0, "epic number, 0 for none")
 	fs.StringVar(&dependsOn, "depends-on", "", "comma-separated issue IDs this one waits for")
+	fs.StringVar(&parent, "parent", "", "parent issue ID, empty to clear")
 	if err := parse(fs, args[1:]); err != nil {
 		return err
 	}
@@ -210,6 +219,8 @@ func (c *command) issueUpdate(ctx context.Context, args []string) error {
 		case "depends-on":
 			deps := splitIDs(dependsOn)
 			patch.DependsOn = &deps
+		case "parent":
+			patch.Parent = &parent
 		}
 	})
 	i, err := c.svc.UpdateIssue(ctx, args[0], patch)
@@ -304,16 +315,66 @@ func (c *command) issueComments(ctx context.Context, args []string) error {
 	return nil
 }
 
+func (c *command) epicSet(ctx context.Context, args []string) error {
+	var e core.Epic
+	fs := c.flagSet("epic set")
+	fs.StringVar(&e.ProjectKey, "project", "", "project key")
+	fs.StringVar(&e.Parent, "parent", "", "parent issue ID")
+	fs.IntVar(&e.Number, "number", 0, "epic number")
+	fs.StringVar(&e.Name, "name", "", "epic name")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	saved, err := c.svc.SetEpic(ctx, e)
+	if err != nil {
+		return err
+	}
+	parent := saved.Parent
+	if parent == "" {
+		parent = saved.ProjectKey
+	}
+	fmt.Fprintf(c.out, "set epic %d of %s: %s\n", saved.Number, parent, saved.Name)
+	return nil
+}
+
+func (c *command) epicList(ctx context.Context, args []string) error {
+	var projectKey string
+	fs := c.flagSet("epic list")
+	fs.StringVar(&projectKey, "project", "", "project key")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	epics, err := c.svc.ListEpics(ctx, projectKey)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(c.out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PARENT\tEPIC\tNAME")
+	for _, e := range epics {
+		parent := e.Parent
+		if parent == "" {
+			parent = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\n", parent, e.Number, e.Name)
+	}
+	return tw.Flush()
+}
+
 func (c *command) printIssue(i core.Issue) {
 	deps := "-"
 	if len(i.DependsOn) > 0 {
 		deps = strings.Join(i.DependsOn, ", ")
+	}
+	parent := "-"
+	if i.Parent != "" {
+		parent = i.Parent
 	}
 	tw := tabwriter.NewWriter(c.out, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "ID\t%s\n", i.ID)
 	fmt.Fprintf(tw, "Title\t%s\n", i.Title)
 	fmt.Fprintf(tw, "Stage\t%s\n", i.Stage)
 	fmt.Fprintf(tw, "Status\t%s\n", i.Status)
+	fmt.Fprintf(tw, "Parent\t%s\n", parent)
 	fmt.Fprintf(tw, "Epic\t%d\n", i.Epic)
 	fmt.Fprintf(tw, "Depends on\t%s\n", deps)
 	fmt.Fprintf(tw, "Assignee\t%s\n", i.Assignee)

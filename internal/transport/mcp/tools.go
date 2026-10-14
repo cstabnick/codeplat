@@ -52,7 +52,8 @@ func tools(svc *core.Service) []tool {
 				"description":{"type":"string"},
 				"assignee":{"type":"string"},
 				"stage":` + stageSchema + `,
-				"epic":{"type":"integer","minimum":0,"description":"epic number within the project, 0 for none"},
+				"parent":{"type":"string","description":"ID of the goal this issue is part of, e.g. PLAT-2"},
+				"epic":{"type":"integer","minimum":0,"description":"epic number within the issue's parent, 0 for none"},
 				"depends_on":{"type":"array","items":{"type":"string"},"description":"IDs of issues that must be done first, e.g. PLAT-4"}},
 				"required":["project_key","title"]}`),
 			call: typed(func(ctx context.Context, in core.NewIssue) (any, error) {
@@ -67,6 +68,7 @@ func tools(svc *core.Service) []tool {
 				"stage":` + stageSchema + `,
 				"status":` + statusSchema + `,
 				"assignee":{"type":"string"},
+				"parent":{"type":"string","description":"ID of the goal this issue is part of, e.g. PLAT-2"},
 				"limit":{"type":"integer","minimum":1,"maximum":200,"description":"at most this many issues; default 50"},
 				"offset":{"type":"integer","minimum":0,"description":"skip this many issues"},
 				"ready":{"type":"boolean","description":"true keeps only issues that nothing blocks"}}}`),
@@ -88,7 +90,7 @@ func tools(svc *core.Service) []tool {
 		},
 		{
 			Name:        "issue_update",
-			Description: "Change an issue. Only the fields you pass are changed; pass an empty assignee to unassign. To hand an issue to the next loop, set the next stage, status todo and an empty assignee. To finish it, set status done. To mark an issue you cannot finish, use issue_block instead, which records why. Set epic to a number and depends_on to a list of issue IDs; pass an empty list ([]) for depends_on to clear them.",
+			Description: "Change an issue. Only the fields you pass are changed; pass an empty assignee to unassign. To hand an issue to the next loop, set the next stage, status todo and an empty assignee. To finish it, set status done. To mark an issue you cannot finish, use issue_block instead, which records why. Set epic to a number and depends_on to a list of issue IDs; pass an empty list ([]) for depends_on to clear them. Pass an empty parent to take the issue out of its goal.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"id":{"type":"string"},
 				"title":{"type":"string"},
@@ -96,7 +98,8 @@ func tools(svc *core.Service) []tool {
 				"assignee":{"type":"string"},
 				"stage":` + stageSchema + `,
 				"status":` + statusSchema + `,
-				"epic":{"type":"integer","minimum":0,"description":"epic number within the project, 0 for none"},
+				"parent":{"type":"string","description":"ID of the goal this issue is part of, e.g. PLAT-2"},
+				"epic":{"type":"integer","minimum":0,"description":"epic number within the issue's parent, 0 for none"},
 				"depends_on":{"type":"array","items":{"type":"string"},"description":"IDs of issues that must be done first, e.g. PLAT-4"}},
 				"required":["id"]}`),
 			call: typed(func(ctx context.Context, in struct {
@@ -134,6 +137,31 @@ func tools(svc *core.Service) []tool {
 				Reason string `json:"reason"`
 			}) (any, error) {
 				return svc.BlockIssue(ctx, in.ID, in.Author, in.Reason)
+			}),
+		},
+		{
+			Name:        "epic_set",
+			Description: "Name an epic, or rename it. An epic is a numbered group of issues under one goal; pass the goal's ID as parent, or leave it out for a project's issues that have no goal.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"project_key":{"type":"string"},
+				"parent":{"type":"string","description":"ID of the goal the epic belongs to, e.g. PLAT-2; leave out for none"},
+				"number":{"type":"integer","minimum":1,"description":"epic number within the parent"},
+				"name":{"type":"string"}},
+				"required":["project_key","number","name"]}`),
+			call: typed(func(ctx context.Context, in core.Epic) (any, error) {
+				return svc.SetEpic(ctx, in)
+			}),
+		},
+		{
+			Name:        "epic_list",
+			Description: "List the named epics of a project, ordered by parent and number.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"project_key":{"type":"string"}},
+				"required":["project_key"]}`),
+			call: typed(func(ctx context.Context, in struct {
+				ProjectKey string `json:"project_key"`
+			}) (any, error) {
+				return svc.ListEpics(ctx, in.ProjectKey)
 			}),
 		},
 		{

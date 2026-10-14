@@ -97,8 +97,8 @@ func TestMCP(t *testing.T) {
 	}
 
 	tools := byID(2).Result.Tools
-	if len(tools) != 10 {
-		t.Errorf("got %d tools, want 10", len(tools))
+	if len(tools) != 12 {
+		t.Errorf("got %d tools, want 12", len(tools))
 	}
 	for _, tool := range tools {
 		if tool.Name != "issue_update" {
@@ -355,5 +355,113 @@ func TestMCPEpicsAndReady(t *testing.T) {
 	}
 	if len(ready) != 1 || ready[0].ID != "PLAT-1" {
 		t.Errorf("issue_list ready = %+v, want only PLAT-1", ready)
+	}
+}
+
+func TestMCPParentsAndEpics(t *testing.T) {
+	a := apptest.New(t)
+
+	call := func(id int, name, args string) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, id, name, args)
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		call(3, "project_create", `{"key":"PLAT","name":"Platform"}`),
+		call(4, "issue_create", `{"project_key":"PLAT","title":"Goal"}`),
+		call(5, "issue_create", `{"project_key":"PLAT","title":"Child","parent":"plat-1"}`),
+		call(6, "issue_create", `{"project_key":"PLAT","title":"Orphan","parent":"PLAT-9"}`),
+		call(7, "issue_list", `{"parent":"PLAT-1"}`),
+		call(8, "epic_set", `{"project_key":"PLAT","parent":"PLAT-1","number":1,"name":"Core"}`),
+		call(9, "epic_set", `{"project_key":"PLAT","parent":"PLAT-1","number":0,"name":"Bad"}`),
+		call(10, "epic_list", `{"project_key":"PLAT"}`),
+	}, "\n") + "\n"
+
+	var out bytes.Buffer
+	if err := mcp.NewServer(a.Service, a.Log).Serve(context.Background(), strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 10 {
+		t.Fatalf("got %d replies, want 10:\n%s", len(lines), &out)
+	}
+	replies := make([]reply, len(lines))
+	for n, line := range lines {
+		if err := json.Unmarshal([]byte(line), &replies[n]); err != nil {
+			t.Fatalf("reply %d %q: %v", n, line, err)
+		}
+	}
+	// Replies are written in request order, so reply n answers request n+1.
+	r := func(id int) reply { return replies[id-1] }
+
+	// The three issue tools advertise parent, and the two epic tools exist.
+	want := map[string]bool{"issue_create": false, "issue_update": false, "issue_list": false}
+	epicTools := map[string]bool{"epic_set": false, "epic_list": false}
+	for _, tool := range r(2).Result.Tools {
+		if _, ok := want[tool.Name]; ok {
+			want[tool.Name] = true
+			props, _ := tool.InputSchema["properties"].(map[string]any)
+			if _, ok := props["parent"]; !ok {
+				t.Errorf("%s schema has no %q property", tool.Name, "parent")
+			}
+		}
+		if _, ok := epicTools[tool.Name]; ok {
+			epicTools[tool.Name] = true
+		}
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("tools/list has no %s tool", name)
+		}
+	}
+	for name, seen := range epicTools {
+		if !seen {
+			t.Errorf("tools/list has no %s tool", name)
+		}
+	}
+
+	// A parent given in lower case is stored as an upper-case ID.
+	var child core.Issue
+	if err := json.Unmarshal([]byte(pagingText(t, r(5))), &child); err != nil {
+		t.Fatal(err)
+	}
+	if child.ID != "PLAT-2" || child.Parent != "PLAT-1" {
+		t.Errorf("issue_create with parent = %+v, want PLAT-2 under PLAT-1", child)
+	}
+
+	// A parent that does not exist is a tool error from core.
+	if got := r(6); got.Error != nil || !got.Result.IsError || len(got.Result.Content) != 1 || !strings.Contains(got.Result.Content[0].Text, "does not exist") {
+		t.Errorf("issue_create with missing parent = %+v", got)
+	}
+
+	// Only PLAT-2 is part of PLAT-1.
+	var under []core.Issue
+	if err := json.Unmarshal([]byte(pagingText(t, r(7))), &under); err != nil {
+		t.Fatal(err)
+	}
+	if len(under) != 1 || under[0].ID != "PLAT-2" {
+		t.Errorf("issue_list parent PLAT-1 = %+v, want only PLAT-2", under)
+	}
+
+	// epic_set names the epic, and a number of 0 is a tool error.
+	var epic core.Epic
+	if err := json.Unmarshal([]byte(pagingText(t, r(8))), &epic); err != nil {
+		t.Fatal(err)
+	}
+	if epic.ProjectKey != "PLAT" || epic.Parent != "PLAT-1" || epic.Number != 1 || epic.Name != "Core" {
+		t.Errorf("epic_set = %+v", epic)
+	}
+	if got := r(9); got.Error != nil || !got.Result.IsError {
+		t.Errorf("epic_set number 0 should be a tool error: %+v", got)
+	}
+
+	// epic_list returns the one epic that was named.
+	var epics []core.Epic
+	if err := json.Unmarshal([]byte(pagingText(t, r(10))), &epics); err != nil {
+		t.Fatal(err)
+	}
+	if len(epics) != 1 || epics[0].Name != "Core" || epics[0].Number != 1 || epics[0].Parent != "PLAT-1" {
+		t.Errorf("epic_list = %+v, want only Core", epics)
 	}
 }

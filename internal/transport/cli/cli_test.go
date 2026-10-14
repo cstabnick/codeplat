@@ -177,3 +177,75 @@ func TestCLIPaging(t *testing.T) {
 		t.Fatalf("issue comments PLAT-1 -limit abc: exit %d, want 2", code)
 	}
 }
+
+func TestCLIParentsAndEpics(t *testing.T) {
+	svc := apptest.New(t).Service
+	run := func(args ...string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		code := cli.Run(context.Background(), svc, args, &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
+	}
+	expect := func(args []string, code int, wantOut, wantErr string) string {
+		t.Helper()
+		gotCode, out, errOut := run(args...)
+		if gotCode != code {
+			t.Fatalf("%v: exit %d, want %d\nstdout: %q\nstderr: %q", args, gotCode, code, out, errOut)
+		}
+		if !strings.Contains(out, wantOut) {
+			t.Fatalf("%v: stdout %q does not contain %q", args, out, wantOut)
+		}
+		if !strings.Contains(errOut, wantErr) {
+			t.Fatalf("%v: stderr %q does not contain %q", args, errOut, wantErr)
+		}
+		return out
+	}
+
+	expect([]string{"project", "create", "plat", "Platform"}, 0, "created project PLAT", "")
+	expect([]string{"issue", "create", "-project", "plat", "-title", "Goal"}, 0, "created issue PLAT-1", "")
+	expect([]string{"issue", "create", "-project", "plat", "-title", "Part", "-parent", "plat-1"}, 0, "created issue PLAT-2", "")
+	expect([]string{"issue", "show", "PLAT-2"}, 0, "Parent      PLAT-1", "")
+
+	// A parent that does not exist is rejected by the Service, with the exact message.
+	_, out, errOut := run("issue", "create", "-project", "plat", "-title", "Bad", "-parent", "PLAT-9")
+	if strings.TrimSpace(errOut) != "error: invalid input: parent PLAT-9 does not exist" || out != "" {
+		t.Fatalf("issue create -parent PLAT-9: stdout %q, stderr %q", out, errOut)
+	}
+
+	// Filtering by parent: the upper-case ID lists the child only, and the
+	// lower-case ID must list exactly the same issues.
+	upper := expect([]string{"issue", "list", "-parent", "PLAT-1"}, 0, "PLAT-2", "")
+	if strings.Contains(upper, "PLAT-1 ") || strings.Contains(upper, "PLAT-1\n") {
+		t.Fatalf("issue list -parent PLAT-1 lists the parent itself: %q", upper)
+	}
+	lower := expect([]string{"issue", "list", "-parent", "plat-1"}, 0, "PLAT-2", "")
+	if lower != upper {
+		t.Fatalf("issue list -parent plat-1 = %q, want same as -parent PLAT-1 = %q", lower, upper)
+	}
+
+	// An empty parent clears the link.
+	expect([]string{"issue", "update", "PLAT-2", "-parent", ""}, 0, "Parent      -", "")
+
+	// Epics: create one under the goal, then one under the project.
+	expect([]string{"epic", "set", "-project", "plat", "-parent", "plat-1", "-number", "1", "-name", "Core"}, 0, "set epic 1 of PLAT-1: Core\n", "")
+	expect([]string{"epic", "set", "-project", "plat", "-parent", "plat-1", "-number", "0", "-name", "Core"}, 1, "", "error: invalid input: epic number must be 1 or more")
+	expect([]string{"epic", "set"}, 1, "", "error: invalid input: project key is required")
+	expect([]string{"epic", "set", "-project", "plat", "-number", "2", "-name", "Misc"}, 0, "set epic 2 of PLAT: Misc\n", "")
+
+	// Only the two real epics are listed; the failed and empty calls changed nothing.
+	list := expect([]string{"epic", "list", "-project", "plat"}, 0, "PLAT-1  1     Core", "")
+	if !strings.HasPrefix(list, "PARENT  EPIC  NAME\n") {
+		t.Fatalf("epic list: header missing, stdout %q", list)
+	}
+	foundMisc := false
+	for _, line := range strings.Split(list, "\n") {
+		if strings.Contains(line, "Misc") {
+			foundMisc = strings.HasPrefix(line, "-")
+		}
+	}
+	if !foundMisc {
+		t.Fatalf("epic list: want a Misc row starting with -, stdout %q", list)
+	}
+
+	// A stray positional argument is a usage error.
+	expect([]string{"epic", "set", "-project", "plat", "-name", "Extra", "extra"}, 2, "", "usage:")
+}

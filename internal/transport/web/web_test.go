@@ -287,3 +287,185 @@ func TestIssuePageShowsBlockers(t *testing.T) {
 		t.Error("issue page still shows Blocked by after BLK-1 is done")
 	}
 }
+
+func TestBoardGroupsByGoalAndEpic(t *testing.T) {
+	ctx := context.Background()
+	a := apptest.New(t)
+	h := web.NewHandler(t.Context(), a.Service, a.Log)
+
+	if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: "GRP", Name: "Grouped"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []core.NewIssue{
+		{ProjectKey: "GRP", Title: "Goal one"},
+		{ProjectKey: "GRP", Title: "Part in epic one", Parent: "GRP-1", Epic: 1},
+		{ProjectKey: "GRP", Title: "Part in epic two", Parent: "GRP-1", Epic: 2},
+		{ProjectKey: "GRP", Title: "Loose issue"},
+	} {
+		if _, err := a.Service.CreateIssue(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.Service.SetEpic(ctx, core.Epic{ProjectKey: "GRP", Parent: "GRP-1", Number: 1, Name: "Core"}); err != nil {
+		t.Fatal(err)
+	}
+	done := core.StatusDone
+	if _, err := a.Service.UpdateIssue(ctx, "GRP-2", core.IssuePatch{Status: &done}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ := get(t, h, "/projects/GRP")
+	if code != http.StatusOK {
+		t.Fatalf("project page = %d", code)
+	}
+	for _, want := range []string{
+		`<a href="/issues/GRP-1">GRP-1 · Goal one</a>`,
+		"1/2 done",
+		"Epic 1 · Core",
+		"Epic 2",
+		"Other issues",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("project page is missing %q", want)
+		}
+	}
+	if n := strings.Count(body, `href="/issues/GRP-1"`); n != 1 {
+		t.Errorf("GRP-1 links on the page = %d; want 1, in the lane heading only", n)
+	}
+	epicOne := strings.Index(body, "Epic 1 · Core")
+	epicTwo := strings.Index(body, "Epic 2")
+	other := strings.Index(body, "Other issues")
+	loose := strings.Index(body, `href="/issues/GRP-4"`)
+	if !(epicOne >= 0 && epicOne < epicTwo && epicTwo < other && other < loose) {
+		t.Errorf("order is wrong: Epic 1 at %d, Epic 2 at %d, Other issues at %d, GRP-4 at %d", epicOne, epicTwo, other, loose)
+	}
+	if !strings.Contains(body, `<details class="lane" open>`) {
+		t.Error("the lane of an unfinished goal is not open")
+	}
+
+	if _, err := a.Service.UpdateIssue(ctx, "GRP-3", core.IssuePatch{Status: &done}); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = get(t, h, "/projects/GRP")
+	if code != http.StatusOK {
+		t.Fatalf("project page after all parts are done = %d", code)
+	}
+	if !strings.Contains(body, "2/2 done") {
+		t.Error("project page is missing 2/2 done after all parts are done")
+	}
+	if n := strings.Count(body, `<details class="lane" open>`); n != 1 {
+		t.Errorf("open lanes = %d; want 1 (Other issues only) once the goal is done", n)
+	}
+	if !strings.Contains(body, `<details class="lane">`) {
+		t.Error("the lane of the finished goal is not closed")
+	}
+
+	if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: "NOG", Name: "No goals"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Service.CreateIssue(ctx, core.NewIssue{ProjectKey: "NOG", Title: "Plain issue"}); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ = get(t, h, "/projects/NOG")
+	if code != http.StatusOK {
+		t.Fatalf("project without goals = %d", code)
+	}
+	if strings.Contains(body, "<details") {
+		t.Error("a project without goals has a lane")
+	}
+	if strings.Contains(body, "Other issues") {
+		t.Error("a project without goals shows Other issues")
+	}
+	if !strings.Contains(body, `href="/issues/NOG-1"`) {
+		t.Error("a project without goals is missing its card")
+	}
+}
+
+func TestBoardEmptyProjectKeepsColumns(t *testing.T) {
+	ctx := context.Background()
+	a := apptest.New(t)
+	h := web.NewHandler(t.Context(), a.Service, a.Log)
+
+	if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: "EMP", Name: "Empty"}); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := get(t, h, "/projects/EMP")
+	if code != http.StatusOK {
+		t.Fatalf("empty project page = %d", code)
+	}
+	for _, want := range []string{"<h2>Refinement", "<h2>Implementation", "<h2>Testing", "<h2>Done"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("empty project page is missing column %q", want)
+		}
+	}
+}
+
+func TestIssuePageShowsGoalAndParts(t *testing.T) {
+	ctx := context.Background()
+	a := apptest.New(t)
+	h := web.NewHandler(t.Context(), a.Service, a.Log)
+
+	if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: "PRT", Name: "Prototype"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []core.NewIssue{
+		{ProjectKey: "PRT", Title: "Goal"},
+		{ProjectKey: "PRT", Title: "First part", Parent: "PRT-1", Epic: 1},
+		{ProjectKey: "PRT", Title: "Second part", Parent: "PRT-1", Epic: 2},
+		{ProjectKey: "PRT", Title: "Unrelated"},
+	} {
+		if _, err := a.Service.CreateIssue(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.Service.SetEpic(ctx, core.Epic{ProjectKey: "PRT", Parent: "PRT-1", Number: 1, Name: "Core"}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ := get(t, h, "/issues/PRT-2")
+	if code != http.StatusOK {
+		t.Fatalf("part page = %d", code)
+	}
+	partOf := strings.Index(body, "Part of")
+	if partOf < 0 {
+		t.Fatal("part page is missing Part of")
+	}
+	if !strings.Contains(body[partOf:], `href="/issues/PRT-1"`) {
+		t.Errorf("part page does not link PRT-1 under Part of")
+	}
+	if strings.Contains(body, ">Parts<") {
+		t.Error("part page should not list parts")
+	}
+
+	code, body, _ = get(t, h, "/issues/PRT-1")
+	if code != http.StatusOK {
+		t.Fatalf("goal page = %d", code)
+	}
+	if strings.Contains(body, "Part of") {
+		t.Error("goal page should not say Part of")
+	}
+	// The blockers line also links the parts, so only look after the heading.
+	heading := strings.Index(body, ">Parts<")
+	if heading < 0 {
+		t.Fatal("goal page is missing Parts")
+	}
+	rest := body[heading:]
+	positions := []int{
+		0, strings.Index(rest, "Epic 1 · Core"),
+		strings.Index(rest, `href="/issues/PRT-2"`), strings.Index(rest, "Epic 2"),
+		strings.Index(rest, `href="/issues/PRT-3"`),
+	}
+	for n := 1; n < len(positions); n++ {
+		if positions[n-1] < 0 || positions[n] < positions[n-1] {
+			t.Fatalf("goal page parts are out of order: %v", positions)
+		}
+	}
+
+	code, body, _ = get(t, h, "/issues/PRT-4")
+	if code != http.StatusOK {
+		t.Fatalf("unrelated page = %d", code)
+	}
+	if strings.Contains(body, "Part of") || strings.Contains(body, ">Parts<") {
+		t.Error("issue with no parent and no parts should show neither Part of nor Parts")
+	}
+}

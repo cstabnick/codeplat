@@ -109,4 +109,62 @@ func TestBlockedBy(t *testing.T) {
 			t.Fatalf("BlockedBy = %v, want nil", got)
 		}
 	})
+
+	withParent := func(id, project, parent string, epic int, status Status, deps ...string) Issue {
+		return Issue{ID: id, ProjectKey: project, Parent: parent, Epic: epic, Status: status, DependsOn: deps}
+	}
+
+	t.Run("epics are counted within one goal", func(t *testing.T) {
+		i := withParent("AAA-5", "AAA", "G2", 2, StatusTodo)
+		all := []Issue{
+			i,
+			withParent("AAA-1", "AAA", "G1", 1, StatusTodo),
+			withParent("AAA-2", "AAA", "G2", 1, StatusTodo),
+		}
+		want := []string{"AAA-2"}
+		if got := BlockedBy(i, all); !reflect.DeepEqual(got, want) {
+			t.Fatalf("BlockedBy = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("an issue with a parent is not blocked by an epic without a parent", func(t *testing.T) {
+		i := withParent("AAA-5", "AAA", "G1", 2, StatusTodo)
+		all := []Issue{
+			i,
+			issue("AAA-1", "AAA", 1, StatusTodo),
+		}
+		if got := BlockedBy(i, all); got != nil {
+			t.Fatalf("BlockedBy = %v, want nil", got)
+		}
+	})
+
+	t.Run("a goal is blocked by its unfinished parts only", func(t *testing.T) {
+		goal := withParent("AAA-1", "AAA", "", 0, StatusTodo)
+		all := []Issue{
+			goal,
+			withParent("AAA-2", "AAA", "AAA-1", 0, StatusDone),
+			withParent("AAA-3", "AAA", "AAA-1", 0, StatusTodo),
+		}
+		want := []string{"AAA-3"}
+		if got := BlockedBy(goal, all); !reflect.DeepEqual(got, want) {
+			t.Fatalf("BlockedBy = %v, want %v", got, want)
+		}
+
+		all[2].Status = StatusDone
+		if got := BlockedBy(goal, all); got != nil {
+			t.Fatalf("all parts done: BlockedBy = %v, want nil", got)
+		}
+	})
+
+	t.Run("a goal's dependency on an unfinished part is listed once", func(t *testing.T) {
+		goal := withParent("AAA-1", "AAA", "", 0, StatusTodo, "AAA-3")
+		all := []Issue{
+			goal,
+			withParent("AAA-3", "AAA", "AAA-1", 0, StatusTodo),
+		}
+		want := []string{"AAA-3"}
+		if got := BlockedBy(goal, all); !reflect.DeepEqual(got, want) {
+			t.Fatalf("BlockedBy = %v, want %v", got, want)
+		}
+	})
 }

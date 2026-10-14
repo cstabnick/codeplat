@@ -519,3 +519,97 @@ func TestEpicsAndDependencies(t *testing.T) {
 		t.Errorf("ready after A is done = %v; want [PLAT-2 PLAT-4]", ids(list))
 	}
 }
+
+func TestParentsAndEpicNames(t *testing.T) {
+	ctx := context.Background()
+	svc := apptest.New(t).Service
+	for _, key := range []string{"PLAT", "OTHER"} {
+		if _, err := svc.CreateProject(ctx, core.NewProject{Key: key, Name: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.CreateIssue(ctx, core.NewIssue{ProjectKey: "OTHER", Title: "elsewhere"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A goal (PLAT-1) with one part (PLAT-2), and a plain issue (PLAT-3).
+	if _, err := svc.CreateIssue(ctx, core.NewIssue{ProjectKey: "PLAT", Title: "goal"}); err != nil {
+		t.Fatal(err)
+	}
+	part, err := svc.CreateIssue(ctx, core.NewIssue{ProjectKey: "PLAT", Title: "part", Parent: " plat-1 "})
+	if err != nil || part.Parent != "PLAT-1" {
+		t.Fatalf("create PLAT-2 = %+v, %v; want parent PLAT-1", part, err)
+	}
+	if got, err := svc.GetIssue(ctx, "PLAT-2"); err != nil || got.Parent != "PLAT-1" {
+		t.Fatalf("read PLAT-2 = %+v, %v; want parent PLAT-1", got, err)
+	}
+	if _, err := svc.CreateIssue(ctx, core.NewIssue{ProjectKey: "PLAT", Title: "plain"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refused parents on create.
+	for _, tc := range []struct{ name, parent string }{
+		{"missing parent", "PLAT-99"},
+		{"parent in another project", "OTHER-1"},
+		{"parent is a part", "PLAT-2"},
+	} {
+		if _, err := svc.CreateIssue(ctx, core.NewIssue{ProjectKey: "PLAT", Title: "x", Parent: tc.parent}); !errors.Is(err, core.ErrInvalid) {
+			t.Errorf("create with %s (%s) = %v; want ErrInvalid", tc.name, tc.parent, err)
+		}
+	}
+
+	// Refused parents on update.
+	self, plain, empty := "PLAT-1", "PLAT-3", ""
+	if _, err := svc.UpdateIssue(ctx, "PLAT-1", core.IssuePatch{Parent: &self}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("update PLAT-1 to be its own parent = %v; want ErrInvalid", err)
+	}
+	if _, err := svc.UpdateIssue(ctx, "PLAT-1", core.IssuePatch{Parent: &plain}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("give PLAT-1 (has parts) a parent = %v; want ErrInvalid", err)
+	}
+
+	// Clearing a parent, and a patch without Parent leaves it alone.
+	title := "part renamed"
+	if _, err := svc.UpdateIssue(ctx, "PLAT-2", core.IssuePatch{Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.GetIssue(ctx, "PLAT-2"); got.Parent != "PLAT-1" || got.Title != title {
+		t.Fatalf("patch without Parent = %+v; want parent PLAT-1 kept", got)
+	}
+	if _, err := svc.UpdateIssue(ctx, "PLAT-2", core.IssuePatch{Parent: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.GetIssue(ctx, "PLAT-2"); got.Parent != "" {
+		t.Errorf("cleared parent = %q; want empty", got.Parent)
+	}
+
+	// PLAT-1 has no parts once PLAT-2 is cleared, so it may now take a parent.
+	if _, err := svc.UpdateIssue(ctx, "PLAT-1", core.IssuePatch{Parent: &plain}); err != nil {
+		t.Errorf("give PLAT-1 (no parts) parent PLAT-3 = %v; want success", err)
+	}
+	if _, err := svc.UpdateIssue(ctx, "PLAT-1", core.IssuePatch{Parent: &empty}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Epic names.
+	for _, e := range []core.Epic{
+		{ProjectKey: "PLAT", Number: 0, Name: "Core"},
+		{ProjectKey: "PLAT", Number: 1, Name: "   "},
+		{ProjectKey: "PLAT", Number: 1, Name: "Core", Parent: "PLAT-99"},
+		{ProjectKey: "", Number: 1, Name: "Core"},
+	} {
+		if _, err := svc.SetEpic(ctx, e); !errors.Is(err, core.ErrInvalid) {
+			t.Errorf("SetEpic(%+v) = %v; want ErrInvalid", e, err)
+		}
+	}
+	if _, err := svc.SetEpic(ctx, core.Epic{ProjectKey: "NOPE", Number: 1, Name: "Core"}); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("SetEpic in missing project = %v; want ErrNotFound", err)
+	}
+	got, err := svc.SetEpic(ctx, core.Epic{ProjectKey: "plat", Parent: "plat-1", Number: 1, Name: " Core "})
+	if err != nil || got.ProjectKey != "PLAT" || got.Parent != "PLAT-1" || got.Name != "Core" {
+		t.Fatalf("SetEpic = %+v, %v; want PLAT, PLAT-1, Core", got, err)
+	}
+	epics, err := svc.ListEpics(ctx, "plat")
+	if err != nil || len(epics) != 1 || epics[0].Name != "Core" || epics[0].Parent != "PLAT-1" {
+		t.Errorf("ListEpics(plat) = %+v, %v; want the Core epic", epics, err)
+	}
+}

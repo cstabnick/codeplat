@@ -26,6 +26,8 @@ func NewHandler(svc *core.Service, auth core.Authenticator, log *slog.Logger) ht
 	mux.HandleFunc("POST /projects", h.createProject)
 	mux.HandleFunc("GET /projects", h.listProjects)
 	mux.HandleFunc("POST /projects/{key}/issues", h.createIssue)
+	mux.HandleFunc("PUT /projects/{key}/epics", h.setEpic)
+	mux.HandleFunc("GET /projects/{key}/epics", h.listEpics)
 	mux.HandleFunc("GET /issues", h.listIssues)
 	mux.HandleFunc("GET /issues/{id}", h.getIssue)
 	mux.HandleFunc("PATCH /issues/{id}", h.updateIssue)
@@ -62,6 +64,7 @@ func (h *handler) createIssue(w http.ResponseWriter, r *http.Request) {
 		Description string     `json:"description"`
 		Assignee    string     `json:"assignee"`
 		Stage       core.Stage `json:"stage"`
+		Parent      string     `json:"parent"`
 		Epic        int        `json:"epic"`
 		DependsOn   []string   `json:"depends_on"`
 	}
@@ -74,10 +77,34 @@ func (h *handler) createIssue(w http.ResponseWriter, r *http.Request) {
 		Description: body.Description,
 		Assignee:    body.Assignee,
 		Stage:       body.Stage,
+		Parent:      body.Parent,
 		Epic:        body.Epic,
 		DependsOn:   body.DependsOn,
 	})
 	h.respond(w, http.StatusCreated, i, err)
+}
+
+func (h *handler) setEpic(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Parent string `json:"parent"`
+		Number int    `json:"number"`
+		Name   string `json:"name"`
+	}
+	if !h.decode(w, r, &body) {
+		return
+	}
+	e, err := h.svc.SetEpic(r.Context(), core.Epic{
+		ProjectKey: r.PathValue("key"),
+		Parent:     body.Parent,
+		Number:     body.Number,
+		Name:       body.Name,
+	})
+	h.respond(w, http.StatusOK, e, err)
+}
+
+func (h *handler) listEpics(w http.ResponseWriter, r *http.Request) {
+	epics, err := h.svc.ListEpics(r.Context(), r.PathValue("key"))
+	h.respond(w, http.StatusOK, epics, err)
 }
 
 func (h *handler) listIssues(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +119,7 @@ func (h *handler) listIssues(w http.ResponseWriter, r *http.Request) {
 		Stage:      core.Stage(q.Get("stage")),
 		Status:     core.Status(q.Get("status")),
 		Assignee:   q.Get("assignee"),
+		Parent:     q.Get("parent"),
 		Ready:      q.Get("ready") == "true",
 		Page:       page,
 	})

@@ -230,6 +230,59 @@ func TestRESTEpicsAndReady(t *testing.T) {
 	}
 }
 
+func TestRESTParentsAndEpics(t *testing.T) {
+	a := apptest.New(t)
+	h := rest.NewHandler(a.Service, a.Auth, a.Log)
+
+	if code := do(t, h, "POST", "/projects", `{"key":"plat","name":"Platform"}`, nil); code != http.StatusCreated {
+		t.Fatalf("create project = %d", code)
+	}
+	if code := do(t, h, "POST", "/projects", `{"key":"other","name":"Other"}`, nil); code != http.StatusCreated {
+		t.Fatalf("create other project = %d", code)
+	}
+	if code := do(t, h, "POST", "/projects/plat/issues", `{"title":"Base"}`, nil); code != http.StatusCreated {
+		t.Fatalf("create base = %d", code)
+	}
+
+	var part core.Issue
+	if code := do(t, h, "POST", "/projects/plat/issues", `{"title":"Part","parent":"plat-1"}`, &part); code != http.StatusCreated || part.Parent != "PLAT-1" {
+		t.Fatalf("create with parent = %d, %+v; want 201 and parent PLAT-1", code, part)
+	}
+	if code := do(t, h, "POST", "/projects/plat/issues", `{"title":"Orphan","parent":"PLAT-9"}`, nil); code != http.StatusBadRequest {
+		t.Fatalf("create with missing parent = %d; want 400", code)
+	}
+
+	var children []core.Issue
+	if code := do(t, h, "GET", "/issues?parent=PLAT-1", "", &children); code != http.StatusOK || len(children) != 1 || children[0].ID != "PLAT-2" {
+		t.Fatalf("children of PLAT-1 = %d, %+v; want PLAT-2 only", code, children)
+	}
+
+	if code := do(t, h, "PATCH", "/issues/PLAT-2", `{"parent":""}`, &part); code != http.StatusOK || part.Parent != "" {
+		t.Fatalf("clear parent = %d, %+v; want 200 and empty parent", code, part)
+	}
+
+	var epic core.Epic
+	if code := do(t, h, "PUT", "/projects/plat/epics", `{"parent":"PLAT-1","number":1,"name":"Core"}`, &epic); code != http.StatusOK ||
+		epic.ProjectKey != "PLAT" || epic.Parent != "PLAT-1" || epic.Number != 1 || epic.Name != "Core" {
+		t.Fatalf("set epic = %d, %+v; want 200 with PLAT, PLAT-1, 1, Core", code, epic)
+	}
+	if code := do(t, h, "PUT", "/projects/plat/epics", `{"parent":"PLAT-1","number":0,"name":"Zero"}`, nil); code != http.StatusBadRequest {
+		t.Fatalf("epic number 0 = %d; want 400", code)
+	}
+	if code := do(t, h, "PUT", "/projects/nope/epics", `{"number":1,"name":"Core"}`, nil); code != http.StatusNotFound {
+		t.Fatalf("epic in missing project = %d; want 404", code)
+	}
+
+	var epics []core.Epic
+	if code := do(t, h, "GET", "/projects/plat/epics", "", &epics); code != http.StatusOK || len(epics) != 1 || epics[0].Name != "Core" {
+		t.Fatalf("list epics = %d, %+v; want the Core epic only", code, epics)
+	}
+	rec := send(h, "", "GET", "/projects/other/epics", "")
+	if rec.Code != http.StatusOK || rec.Body.String() != "[]\n" {
+		t.Fatalf("list epics of other = %d, %q; want 200 and []", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRESTRequiresToken(t *testing.T) {
 	a := apptest.NewWithAuth(t)
 	h := rest.NewHandler(a.Service, a.Auth, a.Log)

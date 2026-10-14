@@ -6,9 +6,11 @@ import (
 	"context"
 	_ "embed"
 	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,17 +47,37 @@ type page struct {
 	Active   string // key of the selected project tab
 	Message  string
 	Board    []column
+	Lanes    []lane
 	Issue    *core.Issue
 	Comments []core.Comment
 
 	IssueEpic      int
 	IssueDepends   []string
 	IssueBlockedBy []string
+	IssueParent    string // ID of the goal this issue is part of, or ""
+	IssueParts     []row  // a goal's parts grouped by epic; nil when it has none
 }
 
 type column struct {
 	Name   string
 	Issues []core.Issue
+}
+
+// lane is one goal on the board with its parts, or the issues that are
+// part of no goal.
+type lane struct {
+	Goal  *core.Issue // nil for the lane of issues without a goal
+	Title string      // "Other issues" for that lane, else ""
+	Done  int         // parts with status done
+	Total int         // parts
+	Open  bool        // rendered expanded
+	Rows  []row
+}
+
+// row is one epic of a lane.
+type row struct {
+	Label   string // "Epic 2 · Persistence", "Epic 2", "No epic", or ""
+	Columns []column
 }
 
 type handler struct {
@@ -120,7 +142,12 @@ func (h *handler) project(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.render(w, http.StatusOK, page{Title: project.Name, Projects: projects, Active: key, Board: board(issues)})
+	epics, err := h.svc.ListEpics(r.Context(), key)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	h.render(w, http.StatusOK, page{Title: project.Name, Projects: projects, Active: key, Board: board(issues), Lanes: lanes(issues, epics)})
 }
 
 func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +180,25 @@ func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockers := core.BlockedBy(issue, others)
+	var parts []core.Issue
+	for _, o := range others {
+		if o.Parent == issue.ID {
+			parts = append(parts, o)
+		}
+	}
+	var partRows []row
+	if len(parts) > 0 {
+		epics, err := h.svc.ListEpics(r.Context(), issue.ProjectKey)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+		for _, l := range lanes(append([]core.Issue{issue}, parts...), epics) {
+			if l.Goal != nil && l.Goal.ID == issue.ID {
+				partRows = l.Rows
+			}
+		}
+	}
 	h.render(w, http.StatusOK, page{
 		Title:          issue.ID + " " + issue.Title,
 		Projects:       projects,
@@ -162,6 +208,8 @@ func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
 		IssueEpic:      issue.Epic,
 		IssueDepends:   issue.DependsOn,
 		IssueBlockedBy: blockers,
+		IssueParent:    issue.Parent,
+		IssueParts:     partRows,
 	})
 }
 
@@ -178,6 +226,114 @@ func board(issues []core.Issue) []column {
 		cols[n].Issues = append(cols[n].Issues, i)
 	}
 	return cols
+}
+
+// lanes builds the board from one project's issues, in the order given. A
+// goal is an issue that is the Parent of at least one issue in the list; it
+// gets one lane, and its parts are the issues whose Parent is its ID. The
+// issues in no lane go in a last lane.
+func lanes(issues []core.Issue, epics []core.Epic) []lane {
+	key := ""
+	if len(issues) > 0 {
+		key = issues[0].ProjectKey
+	}
+	ids := make(map[string]bool, len(issues))
+	for _, i := range issues {
+		ids[i.ID] = true
+	}
+	goals := map[string]bool{}
+	for _, i := range issues {
+		if i.Parent != "" && ids[i.Parent] {
+			goals[i.Parent] = true
+		}
+	}
+
+	var out []lane
+	for i := range issues {
+		if !goals[issues[i].ID] {
+			continue
+		}
+		goal := issues[i]
+		var parts []core.Issue
+		for _, p := range issues {
+			if p.Parent == goal.ID {
+				parts = append(parts, p)
+			}
+		}
+		out = append(out, newLane(&goal, "", parts, goal.ID, key, epics))
+	}
+
+	var other []core.Issue
+	for _, p := range issues {
+		if goals[p.ID] || (p.Parent != "" && goals[p.Parent]) {
+			continue
+		}
+		other = append(other, p)
+	}
+	// The last lane is kept in a project with no goals, even when empty, so
+	// the board still shows its four columns.
+	if len(other) > 0 || len(out) == 0 {
+		title := "Other issues"
+		if len(out) == 0 {
+			title = ""
+		}
+		out = append(out, newLane(nil, title, other, "", key, epics))
+	}
+	return out
+}
+
+// newLane fills one lane. parent is the goal's ID, or "" for the last lane.
+func newLane(goal *core.Issue, title string, parts []core.Issue, parent, key string, epics []core.Epic) lane {
+	l := lane{Goal: goal, Title: title, Total: len(parts), Open: goal == nil}
+	for _, p := range parts {
+		if p.Status == core.StatusDone {
+			l.Done++
+		}
+	}
+	l.Open = l.Open || l.Done < l.Total
+	l.Rows = rows(parts, parent, key, epics)
+	return l
+}
+
+// rows groups parts by epic, ascending, with epic 0 last.
+func rows(parts []core.Issue, parent, key string, epics []core.Epic) []row {
+	byEpic := map[int][]core.Issue{}
+	var nums []int
+	for _, p := range parts {
+		if _, ok := byEpic[p.Epic]; !ok {
+			nums = append(nums, p.Epic)
+		}
+		byEpic[p.Epic] = append(byEpic[p.Epic], p)
+	}
+	sort.Slice(nums, func(a, b int) bool {
+		if nums[a] == 0 {
+			return false
+		}
+		if nums[b] == 0 {
+			return true
+		}
+		return nums[a] < nums[b]
+	})
+	if len(nums) == 0 {
+		return []row{{Columns: board(nil)}}
+	}
+	out := make([]row, 0, len(nums))
+	for _, n := range nums {
+		label := ""
+		if n > 0 {
+			label = fmt.Sprintf("Epic %d", n)
+			for _, e := range epics {
+				if e.ProjectKey == key && e.Parent == parent && e.Number == n {
+					label = fmt.Sprintf("Epic %d · %s", n, e.Name)
+					break
+				}
+			}
+		} else if len(nums) > 1 {
+			label = "No epic"
+		}
+		out = append(out, row{Label: label, Columns: board(byEpic[n])})
+	}
+	return out
 }
 
 func (h *handler) render(w http.ResponseWriter, status int, p page) {

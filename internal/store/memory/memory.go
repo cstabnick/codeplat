@@ -18,7 +18,15 @@ type Store struct {
 	nextNumber map[string]int
 	issues     map[string]core.Issue
 	comments   map[string][]core.Comment
+	epics      map[epicKey]core.Epic
 	events     []core.Event
+}
+
+// epicKey identifies an epic; its name is the value stored for it.
+type epicKey struct {
+	projectKey string
+	parent     string
+	number     int
 }
 
 // record appends one event. The caller must hold s.mu.
@@ -38,6 +46,7 @@ func New() *Store {
 		nextNumber: map[string]int{},
 		issues:     map[string]core.Issue{},
 		comments:   map[string][]core.Comment{},
+		epics:      map[epicKey]core.Epic{},
 	}
 }
 
@@ -104,6 +113,9 @@ func (s *Store) ListIssues(_ context.Context, f core.IssueFilter) ([]core.Issue,
 			continue
 		}
 		if f.Assignee != "" && i.Assignee != f.Assignee {
+			continue
+		}
+		if f.Parent != "" && i.Parent != f.Parent {
 			continue
 		}
 		out = append(out, i)
@@ -185,4 +197,31 @@ func (s *Store) LastEventID(_ context.Context) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return int64(len(s.events)), nil
+}
+
+func (s *Store) SetEpic(_ context.Context, e core.Epic, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.projects[e.ProjectKey]; !ok {
+		return fmt.Errorf("project %s: %w", e.ProjectKey, core.ErrNotFound)
+	}
+	s.epics[epicKey{e.ProjectKey, e.Parent, e.Number}] = e
+	s.record(core.EventEpicSet, e.ProjectKey, e.Parent, at)
+	return nil
+}
+
+func (s *Store) ListEpics(_ context.Context, projectKey string) ([]core.Epic, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []core.Epic{}
+	for k, e := range s.epics {
+		if projectKey != "" && k.projectKey != projectKey {
+			continue
+		}
+		out = append(out, e)
+	}
+	slices.SortFunc(out, func(a, b core.Epic) int {
+		return cmp.Or(cmp.Compare(a.ProjectKey, b.ProjectKey), cmp.Compare(a.Parent, b.Parent), cmp.Compare(a.Number, b.Number))
+	})
+	return out, nil
 }

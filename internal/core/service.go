@@ -78,9 +78,53 @@ func (s *Service) CreateIssue(ctx context.Context, in NewIssue) (Issue, error) {
 	if err != nil {
 		return Issue{}, err
 	}
+	parent, err := s.checkParent(ctx, "", i.ProjectKey, in.Parent)
+	if err != nil {
+		return Issue{}, err
+	}
+	i.Parent = parent
 	i.Epic = in.Epic
 	i.DependsOn = deps
 	return s.store.CreateIssue(ctx, i)
+}
+
+// checkParent normalizes parent (normalizeKey) and returns it. An empty
+// parent is valid and returns "". self is the normalized ID of the
+// issue being updated, or "" when the issue is new; projectKey is the
+// project of that issue. It returns an invalid error when the parent
+// is self, is not a stored issue, is in another project, or is itself
+// part of a goal, or when self already has parts.
+func (s *Service) checkParent(ctx context.Context, self, projectKey, parent string) (string, error) {
+	parent = normalizeKey(parent)
+	if parent == "" {
+		return "", nil
+	}
+	if parent == self {
+		return "", invalid(fmt.Sprintf("issue %s cannot be its own parent", parent))
+	}
+	p, err := s.store.GetIssue(ctx, parent)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return "", invalid(fmt.Sprintf("parent %s does not exist", parent))
+		}
+		return "", err
+	}
+	if p.ProjectKey != projectKey {
+		return "", invalid(fmt.Sprintf("parent %s is in another project", parent))
+	}
+	if p.Parent != "" {
+		return "", invalid(fmt.Sprintf("parent %s is part of %s; goals do not nest", parent, p.Parent))
+	}
+	if self != "" {
+		parts, err := s.store.ListIssues(ctx, IssueFilter{Parent: self})
+		if err != nil {
+			return "", err
+		}
+		if len(parts) > 0 {
+			return "", invalid(fmt.Sprintf("issue %s has parts and cannot be given a parent", self))
+		}
+	}
+	return parent, nil
 }
 
 // checkDependencies normalizes ids (trim, then normalizeKey) and drops
@@ -173,6 +217,7 @@ func (s *Service) GetIssue(ctx context.Context, id string) (Issue, error) {
 
 func (s *Service) ListIssues(ctx context.Context, f IssueFilter) ([]Issue, error) {
 	f.ProjectKey = normalizeKey(f.ProjectKey)
+	f.Parent = normalizeKey(f.Parent)
 	var err error
 	if f.Page, err = f.Page.resolve(); err != nil {
 		return nil, err
@@ -241,6 +286,17 @@ func (s *Service) UpdateIssue(ctx context.Context, id string, patch IssuePatch) 
 		}
 		patch.DependsOn = &deps
 	}
+	if patch.Parent != nil {
+		current, err := s.store.GetIssue(ctx, normalizeKey(id))
+		if err != nil {
+			return Issue{}, err
+		}
+		parent, err := s.checkParent(ctx, current.ID, current.ProjectKey, *patch.Parent)
+		if err != nil {
+			return Issue{}, err
+		}
+		patch.Parent = &parent
+	}
 	return s.store.UpdateIssue(ctx, normalizeKey(id), func(i *Issue) error {
 		if patch.Title != nil {
 			i.Title = *patch.Title
@@ -256,6 +312,9 @@ func (s *Service) UpdateIssue(ctx context.Context, id string, patch IssuePatch) 
 		}
 		if patch.Status != nil {
 			i.Status = *patch.Status
+		}
+		if patch.Parent != nil {
+			i.Parent = *patch.Parent
 		}
 		if patch.Epic != nil {
 			i.Epic = *patch.Epic
@@ -362,6 +421,44 @@ func (s *Service) ListCommentsPage(ctx context.Context, issueID string, p Page) 
 		return []Comment{}, nil
 	}
 	return all[p.Offset:min(p.Offset+p.Limit, len(all))], nil
+}
+
+// SetEpic names an epic, or renames it. The number must be 1 or more
+// and the name is required. A parent, if given, must be an issue of
+// the same project.
+func (s *Service) SetEpic(ctx context.Context, e Epic) (Epic, error) {
+	e.ProjectKey = normalizeKey(e.ProjectKey)
+	e.Parent = normalizeKey(e.Parent)
+	e.Name = strings.TrimSpace(e.Name)
+	if e.ProjectKey == "" {
+		return Epic{}, invalid("project key is required")
+	}
+	if e.Number < 1 {
+		return Epic{}, invalid("epic number must be 1 or more")
+	}
+	if e.Name == "" {
+		return Epic{}, invalid("epic name is required")
+	}
+	if e.Parent != "" {
+		p, err := s.store.GetIssue(ctx, e.Parent)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return Epic{}, invalid(fmt.Sprintf("parent %s does not exist", e.Parent))
+			}
+			return Epic{}, err
+		}
+		if p.ProjectKey != e.ProjectKey {
+			return Epic{}, invalid(fmt.Sprintf("parent %s is in another project", e.Parent))
+		}
+	}
+	if err := s.store.SetEpic(ctx, e, s.now().UTC()); err != nil {
+		return Epic{}, err
+	}
+	return e, nil
+}
+
+func (s *Service) ListEpics(ctx context.Context, projectKey string) ([]Epic, error) {
+	return s.store.ListEpics(ctx, normalizeKey(projectKey))
 }
 
 func (s *Service) EventsSince(ctx context.Context, after int64) ([]Event, error) {

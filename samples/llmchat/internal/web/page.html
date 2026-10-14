@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llmchat</title>
+<style>
+:root {
+  --fg: #1d1f24;
+  --bg: #ffffff;
+  --muted: #6b7280;
+  --line: #d8dce3;
+  --accent: #2563eb;
+  --err: #b91c1c;
+  --side-bg: #f5f6f8;
+  --user-bg: #e8f0fe;
+  --active-bg: #dbe7fb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e8ec;
+    --bg: #16181d;
+    --muted: #9aa1ac;
+    --line: #333842;
+    --accent: #6ea8fe;
+    --err: #ff8a80;
+    --side-bg: #1b1e25;
+    --user-bg: #1f2a3d;
+    --active-bg: #26324a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+button, select, textarea {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+#send { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+
+#sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--side-bg);
+  border-right: 1px solid var(--line);
+}
+#conversations { list-style: none; margin: 0; padding: 0; }
+#conversations li {
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#conversations li:hover { background: var(--user-bg); }
+#conversations li.active { background: var(--active-bg); font-weight: 600; }
+
+#main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+#main > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+#title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+.msg {
+  max-width: 80%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.msg.user { margin-left: auto; background: var(--user-bg); }
+.msg.assistant { margin-right: auto; }
+.msg.err { border-color: var(--err); color: var(--err); }
+.msg .content { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg .content pre { white-space: pre; }
+.meta { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
+pre {
+  margin: 6px 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; }
+details.reasoning { margin-bottom: 8px; color: var(--muted); }
+details.reasoning summary { cursor: pointer; }
+details.reasoning > div { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+#composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+#prompt { flex: 1; min-width: 0; resize: vertical; }
+
+@media (max-width: 720px) {
+  body { grid-template-columns: 1fr; height: auto; }
+  #sidebar { max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  #main { min-height: 70vh; }
+  #log { min-height: 40vh; }
+}
+</style>
+</head>
+<body>
+<aside id="sidebar">
+  <button id="new-chat" type="button">New chat</button>
+  <ul id="conversations"></ul>
+</aside>
+<main id="main">
+  <header>
+    <span id="title"></span>
+    <select id="model"></select>
+    <button id="delete" type="button">Delete</button>
+  </header>
+  <div id="log"></div>
+  <form id="composer">
+    <textarea id="prompt" rows="3" placeholder="Ask something…" required></textarea>
+    <button id="send" type="submit">Send</button>
+  </form>
+</main>
+<script src="/app.js" defer></script>
+</body>
+</html>

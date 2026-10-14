@@ -35,7 +35,7 @@ Dependencies point inward: transports and stores import `core`; `core` imports n
 ## Decisions
 
 - **Config format:** JSON, embedded with `go:embed`, so binaries are self-contained and need no parser dependency. Unknown fields are an error.
-- **Data location:** `config.FromEnvironment` resolves a relative store path against the data directory, so entrypoints share a database regardless of working directory.
+- **Data location:** `config.FromEnvironment` resolves a relative store path against the data directory, so entrypoints share a database regardless of working directory. A binary in a checkout's `bin/` uses that checkout's `data/` when it exists; this repository commits `data/codeplat.dev.db`, and `sqlite.Store.Close` checkpoints the write-ahead log so that file is current.
 - **Storage:** SQLite through `modernc.org/sqlite` (pure Go, no cgo) for dev and prod; an in-memory map for test.
 - **Issue IDs:** Jira-style `KEY-n`, numbered per project. The store allocates the number atomically.
 - **Updates:** `Store.UpdateIssue` takes a function and runs it inside the store's lock or transaction, so read-modify-write is atomic.

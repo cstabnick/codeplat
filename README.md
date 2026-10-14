@@ -31,7 +31,7 @@ bin/codeplat issue update PLAT-1 -stage testing -status todo -assignee ""   # ha
 
 `CODEPLAT_ENV` picks the config: `dev` (default), `test`, or `prod`. The files live in `config/` and are compiled into the binaries. `CODEPLAT_CONFIG=/path/to/file.json` uses an external file instead.
 
-A relative SQLite path in the config is resolved against the data directory: `CODEPLAT_DATA_DIR` if set, otherwise `~/.local/share/codeplat` (or `$XDG_DATA_HOME/codeplat`). All three binaries therefore share one database per environment, whatever directory they run from.
+A relative SQLite path in the config is resolved against the data directory: `CODEPLAT_DATA_DIR` if set; otherwise, for a binary in a checkout's `bin/` when that checkout has a `data/` directory, that `data/`; otherwise `~/.local/share/codeplat` (or `$XDG_DATA_HOME/codeplat`). The binaries therefore share one database per environment, whatever directory they run from. This repository has `data/`, and commits `data/codeplat.dev.db`, so the tracker's own issues travel with the code. Closing a store folds the write-ahead log into that file, so any CLI command (for example `bin/codeplat project list`) brings it up to date before a commit.
 
 Requests need a token outside `dev` and `test`. Set `CODEPLAT_TOKENS` to a JSON object that maps a name to a token, for example `CODEPLAT_TOKENS='{"worker-1":"<long random string>"}'`. The name becomes the assignee or comment author of that token's writes. `bin/codeplat-rest` takes the token as `Authorization: Bearer <token>`. `bin/codeplat-web` asks for it as the password of a login; the username is ignored. The CLI and MCP do not use tokens. They open the database file directly. Without `CODEPLAT_TOKENS`, `prod` refuses every REST and web request.
 

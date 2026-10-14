@@ -5,6 +5,7 @@ build:
 	go build -o bin/codeplat-rest ./cmd/rest
 	go build -o bin/codeplat-mcp ./cmd/mcp
 	go build -o bin/codeplat-web ./cmd/web
+	go build -o bin/codeplat-runner ./cmd/runner
 
 test:
 	go test ./...

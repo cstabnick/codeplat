@@ -34,7 +34,7 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := httprun.Serve(ctx, "rest", cfg.HTTP.Addr, rest.NewHandler(a.Service, a.Log), a.Log); err != nil {
+	if err := httprun.Serve(ctx, "rest", cfg.HTTP.Addr, rest.NewHandler(a.Service, a.Auth, a.Log), a.Log); err != nil {
 		a.Log.Error("rest server stopped", "err", err)
 		return 1
 	}

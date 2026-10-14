@@ -5,15 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · codeplat</title>
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --line: #dfe3e8; --text: #1c2430; --muted: #66707d;
-    --accent: #2f6fde; --todo: #8a94a3; --progress: #c77700; --done: #2a8f5a;
+    --accent: #2f6fde; --todo: #8a94a3; --progress: #c77700; --done: #2a8f5a; --blocked: #c23b3b;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14171c; --panel: #1d2128; --line: #2e343d; --text: #e6e9ee; --muted: #98a2b0;
-      --accent: #6ea0ff; --todo: #7d8794; --progress: #e3a13a; --done: #4fbf85;
+      --accent: #6ea0ff; --todo: #7d8794; --progress: #e3a13a; --done: #4fbf85; --blocked: #ff7a7a;
     }
   }
   * { box-sizing: border-box; }
@@ -41,6 +42,7 @@
   .badge.todo { color: var(--todo); }
   .badge.in_progress { color: var(--progress); }
   .badge.done { color: var(--done); }
+  .badge.blocked { color: var(--blocked); }
   .none { margin: 0; font-size: 13px; color: var(--muted); }
   .issue { max-width: 900px; }
   .back { color: var(--accent); font-size: 14px; }
@@ -64,7 +66,8 @@
 {{if .Message}}<p class="empty">{{.Message}}</p>{{end}}
 
 {{if .Board}}
-<section id="board" class="board" hx-get="/projects/{{.Active}}" hx-trigger="every 3s" hx-select="#board" hx-target="#board" hx-swap="outerHTML">
+<div hx-ext="sse" sse-connect="/events?topic=project.{{.Active}}">
+<section id="board" class="board" hx-get="/projects/{{.Active}}" hx-trigger="sse:changed, every 60s" hx-select="#board" hx-target="#board" hx-swap="outerHTML" hx-disinherit="*">
   {{range .Board}}
   <div class="column">
     <h2>{{.Name}} <span class="count">{{len .Issues}}</span></h2>
@@ -83,19 +86,26 @@
   </div>
   {{end}}
 </section>
+</div>
 {{end}}
 
 {{with .Issue}}
 <article class="issue">
   <a class="back" href="/projects/{{.ProjectKey}}">&larr; Back to board</a>
   <h1>{{.ID}} · {{.Title}}</h1>
-  <div id="live" hx-get="/issues/{{.ID}}" hx-trigger="every 3s" hx-select="#live" hx-target="#live" hx-swap="outerHTML">
+  <div hx-ext="sse" sse-connect="/events?topic=issue.{{.ID}}">
+  <div id="live" hx-get="/issues/{{.ID}}" hx-trigger="sse:changed, every 60s" hx-select="#live" hx-target="#live" hx-swap="outerHTML" hx-disinherit="*">
     <div class="meta">
       <span class="badge">{{label .Stage}}</span>
       <span class="badge {{.Status}}">{{label .Status}}</span>
       <span>{{if .Assignee}}Assigned to {{.Assignee}}{{else}}Unassigned{{end}}</span>
       <span>Created {{ts .CreatedAt}}</span>
       <span>Updated {{ts .UpdatedAt}}</span>
+    </div>
+    <div class="meta">
+      {{if $.IssueEpic}}<span>Epic {{$.IssueEpic}}</span>{{end}}
+      {{if $.IssueDepends}}<span>Depends on {{range $.IssueDepends}}<a href="/issues/{{.}}">{{.}}</a> {{end}}</span>{{end}}
+      {{if $.IssueBlockedBy}}<span>Blocked by {{range $.IssueBlockedBy}}<a href="/issues/{{.}}">{{.}}</a> {{end}}</span>{{end}}
     </div>
     <h2>Comments ({{len $.Comments}})</h2>
     {{range $.Comments}}
@@ -106,6 +116,7 @@
     {{else}}
     <p class="none">No comments yet</p>
     {{end}}
+  </div>
   </div>
   <h2>Description</h2>
   {{if .Description}}<pre>{{.Description}}</pre>{{else}}<p class="none">No description</p>{{end}}

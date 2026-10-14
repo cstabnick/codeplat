@@ -4,5 +4,12 @@
   "store": { "driver": "sqlite", "path": "codeplat.dev.db" },
   "http": { "addr": "127.0.0.1:8080" },
   "web": { "addr": "127.0.0.1:8090" },
-  "clock": {}
+  "clock": {},
+  "auth": { "open": true },
+  "runner": {
+    "command": ["claude", "--agent", "haiku-worker", "-p"],
+    "poll_interval": "5s",
+    "cooldown": "60s",
+    "max_workers": 2
+  }
 }

@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"html/template"
@@ -11,8 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"codeplat/internal/bus"
 	"codeplat/internal/core"
+	"codeplat/internal/transport/web/sse"
 )
+
+// feedInterval is how often the web server looks for new events.
+const feedInterval = 500 * time.Millisecond
 
 //go:embed page.html
 var pageHTML string
@@ -41,6 +47,10 @@ type page struct {
 	Board    []column
 	Issue    *core.Issue
 	Comments []core.Comment
+
+	IssueEpic      int
+	IssueDepends   []string
+	IssueBlockedBy []string
 }
 
 type column struct {
@@ -53,12 +63,23 @@ type handler struct {
 	log *slog.Logger
 }
 
-func NewHandler(svc *core.Service, log *slog.Logger) http.Handler {
+// NewHandler serves the web UI. It starts a feed that publishes new events to
+// the browsers listening on /events until ctx is done.
+func NewHandler(ctx context.Context, svc *core.Service, log *slog.Logger) http.Handler {
 	h := &handler{svc: svc, log: log}
+	b := bus.New()
+	after, err := svc.LastEventID(ctx)
+	if err != nil {
+		log.Error("reading last event ID", "err", err)
+		after = 0
+	}
+	go feed(ctx, svc, b, after, feedInterval, log)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.home)
 	mux.HandleFunc("GET /projects/{key}", h.project)
 	mux.HandleFunc("GET /issues/{id}", h.issue)
+	mux.Handle("GET /events", sse.Handler(b))
 	return mux
 }
 
@@ -92,7 +113,9 @@ func (h *handler) project(w http.ResponseWriter, r *http.Request) {
 		h.render(w, http.StatusNotFound, page{Title: "Not found", Projects: projects, Message: "There is no project " + key + "."})
 		return
 	}
-	issues, err := h.svc.ListIssues(r.Context(), core.IssueFilter{ProjectKey: key})
+	issues, err := all(func(p core.Page) ([]core.Issue, error) {
+		return h.svc.ListIssues(r.Context(), core.IssueFilter{ProjectKey: key, Page: p})
+	})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -115,12 +138,31 @@ func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	comments, err := h.svc.ListComments(r.Context(), issue.ID)
+	comments, err := all(func(p core.Page) ([]core.Comment, error) {
+		return h.svc.ListCommentsPage(r.Context(), issue.ID, p)
+	})
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	h.render(w, http.StatusOK, page{Title: issue.ID + " " + issue.Title, Projects: projects, Active: issue.ProjectKey, Issue: &issue, Comments: comments})
+	others, err := all(func(p core.Page) ([]core.Issue, error) {
+		return h.svc.ListIssues(r.Context(), core.IssueFilter{Page: p})
+	})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	blockers := core.BlockedBy(issue, others)
+	h.render(w, http.StatusOK, page{
+		Title:          issue.ID + " " + issue.Title,
+		Projects:       projects,
+		Active:         issue.ProjectKey,
+		Issue:          &issue,
+		Comments:       comments,
+		IssueEpic:      issue.Epic,
+		IssueDepends:   issue.DependsOn,
+		IssueBlockedBy: blockers,
+	})
 }
 
 // board sorts issues into one column per stage plus a final column for
@@ -149,4 +191,21 @@ func (h *handler) render(w http.ResponseWriter, status int, p page) {
 func (h *handler) fail(w http.ResponseWriter, err error) {
 	h.log.Error("request failed", "err", err)
 	http.Error(w, "internal error", http.StatusInternalServerError)
+}
+
+// all reads every page of a list. fetch is called with pages of
+// core.MaxPageLimit items at increasing offsets. It stops at the first page
+// that is shorter than the limit, and returns everything it read.
+func all[T any](fetch func(core.Page) ([]T, error)) ([]T, error) {
+	var out []T
+	for offset := 0; ; offset += core.MaxPageLimit {
+		items, err := fetch(core.Page{Limit: core.MaxPageLimit, Offset: offset})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if len(items) < core.MaxPageLimit {
+			return out, nil
+		}
+	}
 }

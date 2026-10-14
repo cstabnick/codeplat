@@ -4,7 +4,51 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRunnerSection(t *testing.T) {
+	base := `"env":"x","store":{"driver":"memory"},"http":{"addr":":1"},"web":{"addr":":2"}`
+	valid := `{` + base + `,"runner":{"command":["claude"],"poll_interval":"5s","cooldown":"60s","max_workers":2}}`
+	cfg, err := parse("valid runner", []byte(valid))
+	if err != nil {
+		t.Fatalf("valid runner section rejected: %v", err)
+	}
+	if got := time.Duration(cfg.Runner.PollInterval); got != 5*time.Second {
+		t.Errorf("PollInterval = %v, want 5s", got)
+	}
+
+	for name, body := range map[string]string{
+		"numeric poll_interval":  `{` + base + `,"runner":{"poll_interval":5}}`,
+		"bad poll_interval":      `{` + base + `,"runner":{"poll_interval":"soon"}}`,
+		"numeric cooldown":       `{` + base + `,"runner":{"cooldown":60}}`,
+		"negative max_workers":   `{` + base + `,"runner":{"max_workers":-1}}`,
+		"negative poll_interval": `{` + base + `,"runner":{"poll_interval":"-5s"}}`,
+	} {
+		if _, err := parse(name, []byte(body)); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+
+	noRunner := `{` + base + `}`
+	if _, err := parse("no runner", []byte(noRunner)); err != nil {
+		t.Errorf("config without runner section rejected: %v", err)
+	}
+}
+
+func TestDevRunnerConfig(t *testing.T) {
+	cfg, err := Load("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"claude", "--agent", "haiku-worker", "-p"}
+	if strings.Join(cfg.Runner.Command, " ") != strings.Join(want, " ") {
+		t.Errorf("Runner.Command = %q, want %q", cfg.Runner.Command, want)
+	}
+	if got := time.Duration(cfg.Runner.PollInterval); got != 5*time.Second {
+		t.Errorf("Runner.PollInterval = %v, want 5s", got)
+	}
+}
 
 func TestEveryEmbeddedConfigLoads(t *testing.T) {
 	entries, err := files.ReadDir(".")
@@ -71,5 +115,36 @@ func TestFromEnvironmentResolvesStorePath(t *testing.T) {
 	t.Setenv("CODEPLAT_ENV", "test")
 	if cfg, err = FromEnvironment(); err != nil || cfg.Store.Path != "" {
 		t.Errorf("memory store: path = %q, err = %v; want empty", cfg.Store.Path, err)
+	}
+}
+
+func TestFromEnvironmentReadsTokens(t *testing.T) {
+	t.Setenv("CODEPLAT_CONFIG", "")
+	t.Setenv("CODEPLAT_DATA_DIR", t.TempDir())
+
+	t.Setenv("CODEPLAT_ENV", "prod")
+	t.Setenv("CODEPLAT_TOKENS", `{"alice":"a-token"}`)
+	cfg, err := FromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.Open {
+		t.Error("prod: Auth.Open = true, want false")
+	}
+	if got := cfg.Auth.Tokens["alice"]; got != "a-token" {
+		t.Errorf("prod: Auth.Tokens[alice] = %q, want %q", got, "a-token")
+	}
+
+	t.Setenv("CODEPLAT_ENV", "dev")
+	if cfg, err = FromEnvironment(); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Auth.Open {
+		t.Error("dev: Auth.Open = false, want true")
+	}
+
+	t.Setenv("CODEPLAT_TOKENS", "not json")
+	if _, err := FromEnvironment(); err == nil {
+		t.Error("invalid CODEPLAT_TOKENS: want error")
 	}
 }

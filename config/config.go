@@ -21,12 +21,52 @@ const (
 )
 
 type Config struct {
-	Env   string `json:"env"`
-	Log   Log    `json:"log"`
-	Store Store  `json:"store"`
-	HTTP  HTTP   `json:"http"`
-	Web   HTTP   `json:"web"`
-	Clock Clock  `json:"clock"`
+	Env    string `json:"env"`
+	Log    Log    `json:"log"`
+	Store  Store  `json:"store"`
+	HTTP   HTTP   `json:"http"`
+	Web    HTTP   `json:"web"`
+	Clock  Clock  `json:"clock"`
+	Auth   Auth   `json:"auth"`
+	Runner Runner `json:"runner,omitempty"`
+}
+
+// Duration is a time.Duration that is read from a JSON string such as "5s".
+type Duration time.Duration
+
+// UnmarshalJSON accepts only a JSON string that time.ParseDuration accepts.
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("duration must be a JSON string such as \"5s\": %w", err)
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// Runner configures the worker runner. The section is optional. A zero
+// value means the runner's default (see runner.Options).
+type Runner struct {
+	Dir          string   `json:"dir,omitempty"`           // working directory of workers; empty means the runner's own
+	Command      []string `json:"command,omitempty"`       // worker command; the runner appends the message
+	PollInterval Duration `json:"poll_interval,omitempty"` // e.g. "5s"
+	Cooldown     Duration `json:"cooldown,omitempty"`      // e.g. "60s"
+	MaxWorkers   int      `json:"max_workers,omitempty"`
+}
+
+// Auth says whether requests must present a token. Tokens are not read from
+// config files.
+type Auth struct {
+	// Open admits every request without a token. False, the zero value, requires
+	// a token, so an environment is closed unless its config says otherwise.
+	Open bool `json:"open"`
+	// Tokens maps each principal name to its token. FromEnvironment fills it
+	// from CODEPLAT_TOKENS, a JSON object of name to token.
+	Tokens map[string]string `json:"-"`
 }
 
 type Log struct {
@@ -62,6 +102,11 @@ func FromEnvironment() (Config, error) {
 			return Config{}, fmt.Errorf("config: %w", err)
 		}
 		cfg.Store.Path = filepath.Join(dir, cfg.Store.Path)
+	}
+	if raw := os.Getenv("CODEPLAT_TOKENS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.Auth.Tokens); err != nil {
+			return Config{}, fmt.Errorf("config: CODEPLAT_TOKENS: %w", err)
+		}
 	}
 	return cfg, nil
 }
@@ -137,6 +182,12 @@ func (c Config) validate() error {
 	}
 	if c.Web.Addr == "" {
 		return fmt.Errorf("web.addr is required")
+	}
+	if c.Runner.MaxWorkers < 0 {
+		return fmt.Errorf("runner.max_workers cannot be negative")
+	}
+	if c.Runner.PollInterval < 0 || c.Runner.Cooldown < 0 {
+		return fmt.Errorf("runner durations cannot be negative")
 	}
 	return nil
 }

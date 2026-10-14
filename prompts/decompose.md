@@ -95,6 +95,7 @@ If the goal is ambiguous in a way that would change how you cut it, ask before p
 Before you record anything, go through each epic:
 
 - List the files each issue changes. A file that appears under two issues is a collision; resolve it with one of the techniques above.
+- List the packages each issue's "Done when" commands compile, including everything those packages import. If that list contains a package another issue in the epic is editing, the check can fail on the other worker's half-written file. Put parallel work in packages that do not import one another, and have a consumer declare the small interface it needs instead of importing the package that will satisfy it.
 - List what each issue's "Done when" commands use while they run: ports, databases, fixed temp paths. Two issues in one epic that use the same one will interfere when their checks run at the same moment. Give each its own, for example a different port per issue.
 - For each issue, ask whether it could start right now if only the earlier epics were finished.
 - Read each issue as though you knew nothing else. Anything you had to fill in from memory is missing from the issue.
@@ -103,7 +104,7 @@ Before you record anything, go through each epic:
 
 ## Record the plan
 
-1. Write the roadmap to `docs/roadmap.md`: the goal, then each epic in order with one line stating what is true when it is done, followed by its issues in full.
+1. Write the roadmap to `docs/roadmaps/<short-name>.md`: the goal, then each epic in order with one line stating what is true when it is done, followed by its issues in full.
 2. Create the issues of the **first epic only** in codeplat with `issue_create`, in stage `refinement`. Ask which project key to use if you were not told.
 3. Report the roadmap's shape: how many epics, how many issues in each, and every dependency with its reason.
 

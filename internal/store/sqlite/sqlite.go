@@ -4,6 +4,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -47,9 +48,30 @@ var migrations = []string{
 		PRIMARY KEY (issue_id, number)
 	);`,
 	`ALTER TABLE issues ADD COLUMN stage TEXT NOT NULL DEFAULT 'refinement';`,
+	`CREATE TABLE events (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		type        TEXT NOT NULL,
+		project_key TEXT NOT NULL,
+		issue_id    TEXT NOT NULL,
+		at          TEXT NOT NULL
+	);`,
+	`ALTER TABLE issues ADD COLUMN epic INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE issues ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]';`,
 }
 
-const issueColumns = `id, project_key, number, title, description, status, assignee, created_at, updated_at, stage`
+const issueColumns = `id, project_key, number, title, description, status, assignee, created_at, updated_at, stage, epic, depends_on`
+
+// encodeDependsOn returns the JSON array text for ids; nil is "[]".
+func encodeDependsOn(ids []string) (string, error) {
+	if ids == nil {
+		ids = []string{}
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
 
 type Store struct {
 	db *sql.DB
@@ -117,7 +139,13 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) CreateProject(ctx context.Context, p core.Project) error {
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO projects (key, name, created_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 		p.Key, p.Name, formatTime(p.CreatedAt))
 	if err != nil {
@@ -126,7 +154,10 @@ func (s *Store) CreateProject(ctx context.Context, p core.Project) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("project %s already exists: %w", p.Key, core.ErrConflict)
 	}
-	return nil
+	if err := recordEvent(ctx, tx, core.EventProjectCreated, p.Key, "", p.CreatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListProjects(ctx context.Context) ([]core.Project, error) {
@@ -167,12 +198,22 @@ func (s *Store) CreateIssue(ctx context.Context, i core.Issue) (core.Issue, erro
 		return core.Issue{}, err
 	}
 	i.ID = core.IssueID(i.ProjectKey, i.Number)
+	if i.DependsOn == nil {
+		i.DependsOn = []string{}
+	}
+	dependsOn, err := encodeDependsOn(i.DependsOn)
+	if err != nil {
+		return core.Issue{}, err
+	}
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO issues (`+issueColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO issues (`+issueColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		i.ID, i.ProjectKey, i.Number, i.Title, i.Description, i.Status, i.Assignee,
-		formatTime(i.CreatedAt), formatTime(i.UpdatedAt), i.Stage)
+		formatTime(i.CreatedAt), formatTime(i.UpdatedAt), i.Stage, i.Epic, dependsOn)
 	if err != nil {
+		return core.Issue{}, err
+	}
+	if err := recordEvent(ctx, tx, core.EventIssueCreated, i.ProjectKey, i.ID, i.CreatedAt); err != nil {
 		return core.Issue{}, err
 	}
 	return i, tx.Commit()
@@ -206,6 +247,17 @@ func (s *Store) ListIssues(ctx context.Context, f core.IssueFilter) ([]core.Issu
 		query += ` WHERE ` + strings.Join(where, " AND ")
 	}
 	query += ` ORDER BY project_key, number`
+	if f.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, f.Limit)
+	} else if f.Offset > 0 {
+		// SQLite accepts OFFSET only after LIMIT, so "no limit" is LIMIT -1.
+		query += ` LIMIT -1`
+	}
+	if f.Offset > 0 {
+		query += ` OFFSET ?`
+		args = append(args, f.Offset)
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -237,10 +289,20 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, fn func(*core.Issue)
 	if err := fn(&i); err != nil {
 		return core.Issue{}, err
 	}
-	_, err = tx.ExecContext(ctx,
-		`UPDATE issues SET title = ?, description = ?, stage = ?, status = ?, assignee = ?, updated_at = ? WHERE id = ?`,
-		i.Title, i.Description, i.Stage, i.Status, i.Assignee, formatTime(i.UpdatedAt), id)
+	if i.DependsOn == nil {
+		i.DependsOn = []string{}
+	}
+	dependsOn, err := encodeDependsOn(i.DependsOn)
 	if err != nil {
+		return core.Issue{}, err
+	}
+	_, err = tx.ExecContext(ctx,
+		`UPDATE issues SET title = ?, description = ?, stage = ?, status = ?, assignee = ?, updated_at = ?, epic = ?, depends_on = ? WHERE id = ?`,
+		i.Title, i.Description, i.Stage, i.Status, i.Assignee, formatTime(i.UpdatedAt), i.Epic, dependsOn, id)
+	if err != nil {
+		return core.Issue{}, err
+	}
+	if err := recordEvent(ctx, tx, core.EventIssueUpdated, i.ProjectKey, id, i.UpdatedAt); err != nil {
 		return core.Issue{}, err
 	}
 	return i, tx.Commit()
@@ -253,7 +315,12 @@ func (s *Store) AddComment(ctx context.Context, c core.Comment) (core.Comment, e
 	}
 	defer tx.Rollback()
 
-	if err := issueExists(ctx, tx, c.IssueID); err != nil {
+	var projectKey string
+	err = tx.QueryRowContext(ctx, `SELECT project_key FROM issues WHERE id = ?`, c.IssueID).Scan(&projectKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.Comment{}, fmt.Errorf("issue %s: %w", c.IssueID, core.ErrNotFound)
+	}
+	if err != nil {
 		return core.Comment{}, err
 	}
 	err = tx.QueryRowContext(ctx,
@@ -265,6 +332,9 @@ func (s *Store) AddComment(ctx context.Context, c core.Comment) (core.Comment, e
 		`INSERT INTO comments (issue_id, number, author, body, created_at) VALUES (?, ?, ?, ?, ?)`,
 		c.IssueID, c.Number, c.Author, c.Body, formatTime(c.CreatedAt))
 	if err != nil {
+		return core.Comment{}, err
+	}
+	if err := recordEvent(ctx, tx, core.EventCommentAdded, projectKey, c.IssueID, c.CreatedAt); err != nil {
 		return core.Comment{}, err
 	}
 	return c, tx.Commit()
@@ -295,6 +365,43 @@ func (s *Store) ListComments(ctx context.Context, issueID string) ([]core.Commen
 	return out, rows.Err()
 }
 
+func (s *Store) EventsSince(ctx context.Context, after int64) ([]core.Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, type, project_key, issue_id, at FROM events WHERE id > ? ORDER BY id`, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.Event{}
+	for rows.Next() {
+		var e core.Event
+		var at string
+		if err := rows.Scan(&e.ID, &e.Type, &e.ProjectKey, &e.IssueID, &at); err != nil {
+			return nil, err
+		}
+		if e.At, err = parseTime(at); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) LastEventID(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM events`).Scan(&id)
+	return id, err
+}
+
+// recordEvent appends an event inside the caller's transaction, so the event
+// commits if and only if the change does.
+func recordEvent(ctx context.Context, tx *sql.Tx, t core.EventType, projectKey, issueID string, at time.Time) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO events (type, project_key, issue_id, at) VALUES (?, ?, ?, ?)`,
+		t, projectKey, issueID, formatTime(at))
+	return err
+}
+
 type queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
@@ -314,13 +421,19 @@ type scanner interface {
 
 func scanIssue(id string, row scanner) (core.Issue, error) {
 	var i core.Issue
-	var created, updated string
-	err := row.Scan(&i.ID, &i.ProjectKey, &i.Number, &i.Title, &i.Description, &i.Status, &i.Assignee, &created, &updated, &i.Stage)
+	var created, updated, dependsOn string
+	err := row.Scan(&i.ID, &i.ProjectKey, &i.Number, &i.Title, &i.Description, &i.Status, &i.Assignee, &created, &updated, &i.Stage, &i.Epic, &dependsOn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Issue{}, fmt.Errorf("issue %s: %w", id, core.ErrNotFound)
 	}
 	if err != nil {
 		return core.Issue{}, err
+	}
+	if err := json.Unmarshal([]byte(dependsOn), &i.DependsOn); err != nil {
+		return core.Issue{}, fmt.Errorf("issue %s: depends_on: %w", i.ID, err)
+	}
+	if i.DependsOn == nil {
+		i.DependsOn = []string{}
 	}
 	if i.CreatedAt, err = parseTime(created); err != nil {
 		return core.Issue{}, err

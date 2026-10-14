@@ -4,5 +4,6 @@
   "store": { "driver": "memory" },
   "http": { "addr": "127.0.0.1:0" },
   "web": { "addr": "127.0.0.1:0" },
-  "clock": { "fixed": "2026-01-01T00:00:00Z" }
+  "clock": { "fixed": "2026-01-01T00:00:00Z" },
+  "auth": { "open": true }
 }

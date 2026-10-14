@@ -8,11 +8,12 @@ Run these from the repository root. `NAME` is the worker name you were given.
 
 | To | Run |
 |---|---|
-| See your queue | `bin/codeplat issue list -stage refinement -status todo` |
+| See your queue | `bin/codeplat issue list -stage refinement -status todo -ready` |
 | Take an issue | `bin/codeplat issue claim ID -assignee NAME` |
 | Read it | `bin/codeplat issue show ID` and `bin/codeplat issue comments ID` |
 | Replace its description | `bin/codeplat issue update ID -desc "$(cat FILE)"` |
 | Leave a comment | `bin/codeplat issue comment ID -author NAME -body "TEXT"` |
+| Block it | `bin/codeplat issue block ID -author NAME -reason "TEXT"` |
 | Hand it on | `bin/codeplat issue update ID -stage implementation -status todo -assignee ""` |
 
 ## Steps
@@ -35,10 +36,10 @@ Work one issue, then stop. Do not run `git commit`.
 
 The only thing you may change is the issue's description. Do not create or edit any file in the repository, even when the issue is small, already clear, or has no code to check against. If there is nothing to verify, say so in your comment and hand the issue on; the implementation worker does the work.
 
-## If you cannot make the issue workable
+## If you cannot finish
 
-Leave a comment that starts with `BLOCKED:` and explains what is missing. Do not hand the issue on; leave it claimed by you so no other worker picks it up.
+Run `bin/codeplat issue block ID -author NAME -reason "TEXT"`, where TEXT says what is missing or wrong, with the failing command and its output if there is one. The issue then shows as blocked and keeps your name as assignee, so no other worker takes it. Do not hand it on, and do not try a different design.
 
 ## Your final message
 
-Give the issue ID, whether you handed it on or blocked it, and what you changed.
+Give the issue ID, whether you handed it on or blocked it, and what you changed. If you blocked it, give the reason you recorded.

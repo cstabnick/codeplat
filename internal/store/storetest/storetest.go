@@ -4,6 +4,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -91,7 +92,8 @@ func Run(t *testing.T, newStore func(t *testing.T) core.Store) {
 		}
 		want := in
 		want.ID, want.Number = "AAA-1", 1
-		if got != want || created != want {
+		want.DependsOn = []string{}
+		if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(created, want) {
 			t.Fatalf("got %+v\ncreated %+v\nwant %+v", got, created, want)
 		}
 		if _, err := s.GetIssue(ctx, "AAA-99"); !errors.Is(err, core.ErrNotFound) {
@@ -149,6 +151,51 @@ func Run(t *testing.T, newStore func(t *testing.T) core.Store) {
 		}
 	})
 
+	t.Run("paging", func(t *testing.T) {
+		s := seed(t)
+		for n := 0; n < 5; n++ {
+			if _, err := s.CreateIssue(ctx, newIssue("AAA", "p")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		check := func(name string, filter core.IssueFilter, want []string) {
+			t.Helper()
+			issues, err := s.ListIssues(ctx, filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if issues == nil {
+				t.Fatalf("%s: got nil, want non-nil", name)
+			}
+			got := []string{}
+			for _, i := range issues {
+				got = append(got, i.ID)
+			}
+			if len(got) != len(want) {
+				t.Fatalf("%s: got %v, want %v", name, got, want)
+			}
+			for n := range got {
+				if got[n] != want[n] {
+					t.Fatalf("%s: got %v, want %v", name, got, want)
+				}
+			}
+		}
+		check("limit and offset", core.IssueFilter{ProjectKey: "AAA", Page: core.Page{Limit: 2, Offset: 2}}, []string{"AAA-3", "AAA-4"})
+		check("last page", core.IssueFilter{ProjectKey: "AAA", Page: core.Page{Limit: 2, Offset: 4}}, []string{"AAA-5"})
+		check("offset without limit", core.IssueFilter{ProjectKey: "AAA", Page: core.Page{Offset: 4}}, []string{"AAA-5"})
+		check("limit without offset", core.IssueFilter{ProjectKey: "AAA", Page: core.Page{Limit: 2}}, []string{"AAA-1", "AAA-2"})
+		check("no page", core.IssueFilter{ProjectKey: "AAA"}, []string{"AAA-1", "AAA-2", "AAA-3", "AAA-4", "AAA-5"})
+		check("offset past end", core.IssueFilter{ProjectKey: "AAA", Page: core.Page{Limit: 2, Offset: 9}}, []string{})
+		check("no done issues", core.IssueFilter{ProjectKey: "AAA", Status: core.StatusDone, Page: core.Page{Limit: 1, Offset: 1}}, []string{})
+		if _, err := s.UpdateIssue(ctx, "AAA-2", func(i *core.Issue) error {
+			i.Status = core.StatusDone
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		check("window after filter", core.IssueFilter{ProjectKey: "AAA", Status: core.StatusDone, Page: core.Page{Limit: 1, Offset: 0}}, []string{"AAA-2"})
+	})
+
 	t.Run("update", func(t *testing.T) {
 		s := seed(t)
 		created, err := s.CreateIssue(ctx, newIssue("AAA", "before"))
@@ -165,7 +212,7 @@ func Run(t *testing.T, newStore func(t *testing.T) core.Store) {
 			t.Fatal(err)
 		}
 		got, _ := s.GetIssue(ctx, created.ID)
-		if got != updated || got.Title != "after" || got.Status != core.StatusDone || got.Stage != core.StageTesting || !got.UpdatedAt.Equal(later) || !got.CreatedAt.Equal(t0) {
+		if !reflect.DeepEqual(got, updated) || got.Title != "after" || got.Status != core.StatusDone || got.Stage != core.StageTesting || !got.UpdatedAt.Equal(later) || !got.CreatedAt.Equal(t0) {
 			t.Fatalf("after update: %+v", got)
 		}
 
@@ -184,6 +231,123 @@ func Run(t *testing.T, newStore func(t *testing.T) core.Store) {
 		_, err = s.UpdateIssue(ctx, "AAA-99", func(*core.Issue) error { return nil })
 		if !errors.Is(err, core.ErrNotFound) {
 			t.Fatalf("UpdateIssue(missing) = %v; want ErrNotFound", err)
+		}
+	})
+
+	t.Run("epic and dependencies", func(t *testing.T) {
+		s := seed(t)
+		plain, err := s.CreateIssue(ctx, newIssue("AAA", "plain"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain.Epic != 0 || plain.DependsOn == nil || len(plain.DependsOn) != 0 {
+			t.Fatalf("CreateIssue without epic = %+v; want epic 0 and empty non-nil DependsOn", plain)
+		}
+		in := newIssue("AAA", "epic")
+		in.Epic, in.DependsOn = 2, []string{"AAA-1"}
+		created, err := s.CreateIssue(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetIssue(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Epic != 2 || !reflect.DeepEqual(got.DependsOn, []string{"AAA-1"}) {
+			t.Fatalf("GetIssue = epic %d, depends_on %v; want epic 2, depends_on [AAA-1]", got.Epic, got.DependsOn)
+		}
+		plainGot, err := s.GetIssue(ctx, plain.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plainGot.Epic != 0 || plainGot.DependsOn == nil || len(plainGot.DependsOn) != 0 {
+			t.Fatalf("GetIssue without epic = %+v; want epic 0 and empty non-nil DependsOn", plainGot)
+		}
+
+		updated, err := s.UpdateIssue(ctx, created.ID, func(i *core.Issue) error {
+			i.Epic, i.DependsOn = 3, []string{"BBB-1", "AAA-1"}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Epic != 3 || !reflect.DeepEqual(updated.DependsOn, []string{"BBB-1", "AAA-1"}) {
+			t.Fatalf("UpdateIssue returned epic %d, depends_on %v", updated.Epic, updated.DependsOn)
+		}
+		got, err = s.GetIssue(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, updated) {
+			t.Fatalf("after update: got %+v, want %+v", got, updated)
+		}
+		listed, err := s.ListIssues(ctx, core.IssueFilter{ProjectKey: "AAA"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listed) != 2 || !reflect.DeepEqual(listed[1], updated) {
+			t.Fatalf("ListIssues after update = %+v; want second issue %+v", listed, updated)
+		}
+
+		cleared, err := s.UpdateIssue(ctx, created.ID, func(i *core.Issue) error {
+			i.DependsOn = []string{}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err = s.GetIssue(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.DependsOn == nil || len(got.DependsOn) != 0 || cleared.DependsOn == nil {
+			t.Fatalf("after clearing, DependsOn = %v; want empty non-nil", got.DependsOn)
+		}
+
+		issues, err := s.ListIssues(ctx, core.IssueFilter{ProjectKey: "AAA"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(issues) != 2 {
+			t.Fatalf("ListIssues = %+v; want 2 issues", issues)
+		}
+		if issues[0].Epic != 0 || issues[0].DependsOn == nil || len(issues[0].DependsOn) != 0 {
+			t.Fatalf("listed plain issue = %+v", issues[0])
+		}
+		if issues[1].Epic != 3 || issues[1].DependsOn == nil || len(issues[1].DependsOn) != 0 {
+			t.Fatalf("listed epic issue = %+v; want epic 3 and no dependencies after clear", issues[1])
+		}
+	})
+
+	t.Run("blocked status", func(t *testing.T) {
+		s := seed(t)
+		blocked, err := s.CreateIssue(ctx, newIssue("AAA", "blocked"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CreateIssue(ctx, newIssue("AAA", "todo")); err != nil {
+			t.Fatal(err)
+		}
+		later := t0.Add(time.Hour)
+		if _, err := s.UpdateIssue(ctx, blocked.ID, func(i *core.Issue) error {
+			i.Status, i.Assignee, i.Stage, i.UpdatedAt = core.StatusBlocked, "sam", core.StageTesting, later
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetIssue(ctx, blocked.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != core.StatusBlocked || got.Assignee != "sam" || got.Stage != core.StageTesting {
+			t.Fatalf("GetIssue after block = %+v; want status blocked, assignee sam, stage testing", got)
+		}
+		issues, err := s.ListIssues(ctx, core.IssueFilter{Status: core.StatusBlocked})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(issues) != 1 || issues[0].ID != blocked.ID {
+			t.Fatalf("ListIssues(blocked) = %+v; want only %s", issues, blocked.ID)
 		}
 	})
 
@@ -292,6 +456,79 @@ func Run(t *testing.T, newStore func(t *testing.T) core.Store) {
 			if i.Number != idx+1 {
 				t.Fatalf("issue %d has number %d", idx, i.Number)
 			}
+		}
+	})
+
+	t.Run("events", func(t *testing.T) {
+		s := newStore(t)
+		if last, err := s.LastEventID(ctx); err != nil || last != 0 {
+			t.Fatalf("new store LastEventID = %d, %v; want 0", last, err)
+		}
+		if evs, err := s.EventsSince(ctx, 0); err != nil || evs == nil || len(evs) != 0 {
+			t.Fatalf("new store EventsSince = %v, %v; want empty non-nil", evs, err)
+		}
+		if err := s.CreateProject(ctx, core.Project{Key: "AAA", Name: "AAA project", CreatedAt: t0}); err != nil {
+			t.Fatal(err)
+		}
+		issue, err := s.CreateIssue(ctx, newIssue("AAA", "x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		later := t0.Add(time.Hour)
+		if _, err := s.UpdateIssue(ctx, issue.ID, func(i *core.Issue) error {
+			i.Title, i.UpdatedAt = "y", later
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		commentAt := t0.Add(2 * time.Hour)
+		if _, err := s.AddComment(ctx, core.Comment{IssueID: issue.ID, Body: "hi", CreatedAt: commentAt}); err != nil {
+			t.Fatal(err)
+		}
+
+		want := []core.Event{
+			{ID: 1, Type: core.EventProjectCreated, ProjectKey: "AAA", At: t0},
+			{ID: 2, Type: core.EventIssueCreated, ProjectKey: "AAA", IssueID: "AAA-1", At: t0},
+			{ID: 3, Type: core.EventIssueUpdated, ProjectKey: "AAA", IssueID: "AAA-1", At: later},
+			{ID: 4, Type: core.EventCommentAdded, ProjectKey: "AAA", IssueID: "AAA-1", At: commentAt},
+		}
+		got, err := s.EventsSince(ctx, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("EventsSince(0) = %+v; want %d events", got, len(want))
+		}
+		for n := range want {
+			g, w := got[n], want[n]
+			if g.ID != w.ID || g.Type != w.Type || g.ProjectKey != w.ProjectKey || g.IssueID != w.IssueID || !g.At.Equal(w.At) {
+				t.Fatalf("event %d = %+v; want %+v", n, g, w)
+			}
+		}
+		if last, err := s.LastEventID(ctx); err != nil || last != 4 {
+			t.Fatalf("LastEventID = %d, %v; want 4", last, err)
+		}
+
+		tail, err := s.EventsSince(ctx, 2)
+		if err != nil || len(tail) != 2 || tail[0].ID != 3 || tail[1].ID != 4 {
+			t.Fatalf("EventsSince(2) = %+v, %v; want IDs 3 and 4", tail, err)
+		}
+
+		if err := s.CreateProject(ctx, core.Project{Key: "AAA", Name: "again", CreatedAt: t0}); !errors.Is(err, core.ErrConflict) {
+			t.Fatalf("duplicate CreateProject = %v; want ErrConflict", err)
+		}
+		if _, err := s.CreateIssue(ctx, newIssue("NOPE", "x")); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("CreateIssue in missing project = %v; want ErrNotFound", err)
+		}
+		boom := errors.New("boom")
+		if _, err := s.UpdateIssue(ctx, issue.ID, func(*core.Issue) error { return boom }); !errors.Is(err, boom) {
+			t.Fatalf("UpdateIssue with failing fn = %v; want boom", err)
+		}
+		if _, err := s.AddComment(ctx, core.Comment{IssueID: "AAA-99", Body: "x", CreatedAt: t0}); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("AddComment(missing issue) = %v; want ErrNotFound", err)
+		}
+		if last, err := s.LastEventID(ctx); err != nil || last != 4 {
+			t.Fatalf("failed calls recorded events: LastEventID = %d, %v; want 4", last, err)
 		}
 	})
 }

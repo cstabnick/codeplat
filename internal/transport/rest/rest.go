@@ -4,10 +4,13 @@ package rest
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"codeplat/internal/core"
+	"codeplat/internal/transport/httpauth"
 )
 
 const maxBodyBytes = 1 << 20
@@ -17,12 +20,9 @@ type handler struct {
 	log *slog.Logger
 }
 
-func NewHandler(svc *core.Service, log *slog.Logger) http.Handler {
+func NewHandler(svc *core.Service, auth core.Authenticator, log *slog.Logger) http.Handler {
 	h := &handler{svc: svc, log: log}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		h.write(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
 	mux.HandleFunc("POST /projects", h.createProject)
 	mux.HandleFunc("GET /projects", h.listProjects)
 	mux.HandleFunc("POST /projects/{key}/issues", h.createIssue)
@@ -30,9 +30,16 @@ func NewHandler(svc *core.Service, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /issues/{id}", h.getIssue)
 	mux.HandleFunc("PATCH /issues/{id}", h.updateIssue)
 	mux.HandleFunc("POST /issues/{id}/claim", h.claimIssue)
+	mux.HandleFunc("POST /issues/{id}/block", h.blockIssue)
 	mux.HandleFunc("POST /issues/{id}/comments", h.addComment)
 	mux.HandleFunc("GET /issues/{id}/comments", h.listComments)
-	return mux
+
+	top := http.NewServeMux()
+	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		h.write(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	top.Handle("/", httpauth.Require(auth, mux))
+	return top
 }
 
 func (h *handler) createProject(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +62,8 @@ func (h *handler) createIssue(w http.ResponseWriter, r *http.Request) {
 		Description string     `json:"description"`
 		Assignee    string     `json:"assignee"`
 		Stage       core.Stage `json:"stage"`
+		Epic        int        `json:"epic"`
+		DependsOn   []string   `json:"depends_on"`
 	}
 	if !h.decode(w, r, &body) {
 		return
@@ -65,19 +74,50 @@ func (h *handler) createIssue(w http.ResponseWriter, r *http.Request) {
 		Description: body.Description,
 		Assignee:    body.Assignee,
 		Stage:       body.Stage,
+		Epic:        body.Epic,
+		DependsOn:   body.DependsOn,
 	})
 	h.respond(w, http.StatusCreated, i, err)
 }
 
 func (h *handler) listIssues(w http.ResponseWriter, r *http.Request) {
+	page, err := pageFrom(r)
+	if err != nil {
+		h.respond(w, http.StatusOK, nil, err)
+		return
+	}
 	q := r.URL.Query()
 	issues, err := h.svc.ListIssues(r.Context(), core.IssueFilter{
 		ProjectKey: q.Get("project"),
 		Stage:      core.Stage(q.Get("stage")),
 		Status:     core.Status(q.Get("status")),
 		Assignee:   q.Get("assignee"),
+		Ready:      q.Get("ready") == "true",
+		Page:       page,
 	})
 	h.respond(w, http.StatusOK, issues, err)
+}
+
+// pageFrom reads the limit and offset query values. An absent value leaves
+// the field 0; a value that is not an integer is an ErrInvalid.
+func pageFrom(r *http.Request) (core.Page, error) {
+	var p core.Page
+	q := r.URL.Query()
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return core.Page{}, fmt.Errorf("%w: limit must be an integer", core.ErrInvalid)
+		}
+		p.Limit = n
+	}
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return core.Page{}, fmt.Errorf("%w: offset must be an integer", core.ErrInvalid)
+		}
+		p.Offset = n
+	}
+	return p, nil
 }
 
 func (h *handler) getIssue(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +145,18 @@ func (h *handler) claimIssue(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, http.StatusOK, i, err)
 }
 
+func (h *handler) blockIssue(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Author string `json:"author"`
+		Reason string `json:"reason"`
+	}
+	if !h.decode(w, r, &body) {
+		return
+	}
+	i, err := h.svc.BlockIssue(r.Context(), r.PathValue("id"), body.Author, body.Reason)
+	h.respond(w, http.StatusOK, i, err)
+}
+
 func (h *handler) addComment(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Author string `json:"author"`
@@ -122,7 +174,12 @@ func (h *handler) addComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listComments(w http.ResponseWriter, r *http.Request) {
-	comments, err := h.svc.ListComments(r.Context(), r.PathValue("id"))
+	page, err := pageFrom(r)
+	if err != nil {
+		h.respond(w, http.StatusOK, nil, err)
+		return
+	}
+	comments, err := h.svc.ListCommentsPage(r.Context(), r.PathValue("id"), page)
 	h.respond(w, http.StatusOK, comments, err)
 }
 

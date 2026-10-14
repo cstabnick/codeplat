@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,7 +11,10 @@ import (
 	"time"
 
 	"codeplat/config"
+	"codeplat/internal/auth"
 	"codeplat/internal/core"
+	"codeplat/internal/process"
+	"codeplat/internal/runner"
 	"codeplat/internal/store/memory"
 	"codeplat/internal/store/sqlite"
 )
@@ -20,6 +24,7 @@ type App struct {
 	Config  config.Config
 	Log     *slog.Logger
 	Service *core.Service
+	Auth    core.Authenticator
 
 	closers []io.Closer
 }
@@ -35,6 +40,20 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
+	if cfg.Auth.Open {
+		a.Auth = auth.Open{}
+	} else {
+		s, err := auth.NewStatic(cfg.Auth.Tokens)
+		if err != nil {
+			a.Close()
+			return nil, fmt.Errorf("app: auth: %w", err)
+		}
+		if len(cfg.Auth.Tokens) == 0 {
+			a.Log.Warn("auth is closed but CODEPLAT_TOKENS is empty: every REST and web request will be refused")
+		}
+		a.Auth = s
+	}
+
 	a.Service = core.NewService(store, newClock(cfg.Clock))
 	return a, nil
 }
@@ -48,6 +67,25 @@ func (a *App) Close() error {
 		}
 	}
 	return first
+}
+
+// NewRunner builds the worker runner from the runner section of the config.
+// It returns an error if runner.command is empty. The only launcher is
+// process.Start, bound to runner.dir.
+func (a *App) NewRunner() (*runner.Runner, error) {
+	if len(a.Config.Runner.Command) == 0 {
+		return nil, fmt.Errorf("app: runner.command is required")
+	}
+	launch := func(_ context.Context, argv []string) (func() error, error) {
+		return process.Start(a.Config.Runner.Dir, argv)
+	}
+	opts := runner.Options{
+		Command:      a.Config.Runner.Command,
+		PollInterval: time.Duration(a.Config.Runner.PollInterval),
+		Cooldown:     time.Duration(a.Config.Runner.Cooldown),
+		MaxWorkers:   a.Config.Runner.MaxWorkers,
+	}
+	return runner.New(a.Service, launch, opts, a.Log), nil
 }
 
 func (a *App) newStore(cfg config.Store) (core.Store, error) {

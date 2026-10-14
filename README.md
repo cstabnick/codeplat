@@ -33,6 +33,8 @@ bin/codeplat issue update PLAT-1 -stage testing -status todo -assignee ""   # ha
 
 A relative SQLite path in the config is resolved against the data directory: `CODEPLAT_DATA_DIR` if set, otherwise `~/.local/share/codeplat` (or `$XDG_DATA_HOME/codeplat`). All three binaries therefore share one database per environment, whatever directory they run from.
 
+Requests need a token outside `dev` and `test`. Set `CODEPLAT_TOKENS` to a JSON object that maps a name to a token, for example `CODEPLAT_TOKENS='{"worker-1":"<long random string>"}'`. The name becomes the assignee or comment author of that token's writes. `bin/codeplat-rest` takes the token as `Authorization: Bearer <token>`. `bin/codeplat-web` asks for it as the password of a login; the username is ignored. The CLI and MCP do not use tokens. They open the database file directly. Without `CODEPLAT_TOKENS`, `prod` refuses every REST and web request.
+
 ## Use from Claude Code
 
 `.mcp.json` registers `bin/codeplat-mcp` as a project MCP server. Run `make build`, start Claude Code in this directory, and approve the `codeplat` server.

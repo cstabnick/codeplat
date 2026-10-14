@@ -10,6 +10,7 @@ import (
 
 	"codeplat/config"
 	"codeplat/internal/app"
+	"codeplat/internal/transport/httpauth"
 	"codeplat/internal/transport/httprun"
 	"codeplat/internal/transport/web"
 )
@@ -34,7 +35,7 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := httprun.Serve(ctx, "web", cfg.Web.Addr, web.NewHandler(a.Service, a.Log), a.Log); err != nil {
+	if err := httprun.Serve(ctx, "web", cfg.Web.Addr, httpauth.Require(a.Auth, web.NewHandler(ctx, a.Service, a.Log)), a.Log); err != nil {
 		a.Log.Error("web server stopped", "err", err)
 		return 1
 	}

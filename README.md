@@ -1,6 +1,6 @@
 # codeplat
 
-A mini issue tracker (projects and issues) with three front doors: a REST API, a CLI, and an MCP server for coding agents.
+A mini issue tracker (projects and issues) with a REST API, a CLI, an MCP server for coding agents, and a read-only web UI.
 
 ## Run
 
@@ -11,6 +11,7 @@ bin/codeplat issue create -project PLAT -title "First issue"
 bin/codeplat issue comment PLAT-1 -body "Started on this" -author sam
 bin/codeplat-rest                # REST on the configured address
 bin/codeplat-mcp                 # MCP over stdio
+bin/codeplat-web                 # web UI, http://127.0.0.1:8090 in dev
 make test
 ```
 

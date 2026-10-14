@@ -26,14 +26,19 @@ func TestEveryEmbeddedConfigLoads(t *testing.T) {
 
 func TestParseRejectsBadConfig(t *testing.T) {
 	for name, body := range map[string]string{
-		"unknown field":  `{"env":"x","store":{"driver":"memory"},"http":{"addr":":1"},"extra":1}`,
-		"unknown driver": `{"env":"x","store":{"driver":"redis"},"http":{"addr":":1"}}`,
-		"sqlite no path": `{"env":"x","store":{"driver":"sqlite"},"http":{"addr":":1"}}`,
-		"missing addr":   `{"env":"x","store":{"driver":"memory"}}`,
+		"unknown field":    `{"env":"x","store":{"driver":"memory"},"http":{"addr":":1"},"web":{"addr":":2"},"extra":1}`,
+		"unknown driver":   `{"env":"x","store":{"driver":"redis"},"http":{"addr":":1"},"web":{"addr":":2"}}`,
+		"sqlite no path":   `{"env":"x","store":{"driver":"sqlite"},"http":{"addr":":1"},"web":{"addr":":2"}}`,
+		"missing addr":     `{"env":"x","store":{"driver":"memory"},"web":{"addr":":2"}}`,
+		"missing web addr": `{"env":"x","store":{"driver":"memory"},"http":{"addr":":1"}}`,
 	} {
 		if _, err := parse(name, []byte(body)); err == nil {
 			t.Errorf("%s: want error", name)
 		}
+	}
+	valid := `{"env":"x","store":{"driver":"memory"},"http":{"addr":":1"},"web":{"addr":":2"}}`
+	if _, err := parse("valid", []byte(valid)); err != nil {
+		t.Errorf("valid config rejected: %v", err)
 	}
 	if _, err := Load("nope"); err == nil {
 		t.Error("Load(nope): want error")

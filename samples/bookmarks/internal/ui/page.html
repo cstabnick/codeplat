@@ -1,0 +1,34 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bookmarks</title>
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+input { flex: 1; padding: 0.4rem; }
+ul { list-style: none; padding: 0; }
+li { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid #ddd; }
+.error { color: #b00020; }
+</style>
+</head>
+<body>{{template "app" .}}</body>
+</html>{{end}}
+{{define "app"}}<section id="app">
+  <form hx-post="/bookmarks" hx-target="#app" hx-swap="outerHTML">
+    <input name="title" value="{{.Title}}" placeholder="Title">
+    <input name="url" value="{{.URL}}" placeholder="https://example.com">
+    <button type="submit">Add</button>
+  </form>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <ul>
+    {{range .Bookmarks}}
+    <li>
+      <a href="{{.URL}}">{{.Title}}</a>
+      <button hx-delete="/bookmarks/{{.ID}}" hx-target="#app" hx-swap="outerHTML">Delete</button>
+    </li>
+    {{end}}
+  </ul>
+</section>{{end}}

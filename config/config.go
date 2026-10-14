@@ -25,6 +25,7 @@ type Config struct {
 	Log   Log    `json:"log"`
 	Store Store  `json:"store"`
 	HTTP  HTTP   `json:"http"`
+	Web   HTTP   `json:"web"`
 	Clock Clock  `json:"clock"`
 }
 
@@ -133,6 +134,9 @@ func (c Config) validate() error {
 	}
 	if c.HTTP.Addr == "" {
 		return fmt.Errorf("http.addr is required")
+	}
+	if c.Web.Addr == "" {
+		return fmt.Errorf("web.addr is required")
 	}
 	return nil
 }

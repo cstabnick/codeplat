@@ -57,6 +57,11 @@ Epic: <number and name>
 Depends on: none
   (or: <issue title>, followed by why it is unavoidable)
 
+## Environment
+Where to work and how: the working directory, how to reach the toolchain,
+which of the repository's rules apply, and whether other workers are
+editing nearby at the same time.
+
 ## Goal
 One or two sentences: what exists after this issue that did not before, and what it is for.
 
@@ -77,7 +82,7 @@ The interfaces this issue provides or must match, verbatim.
 What is nearby that the worker should not touch, especially files another issue owns.
 ```
 
-"Done when" needs at least one command the worker can run, scoped so that it can pass before the rest of the epic lands.
+"Done when" needs at least one command the worker can run, scoped so that it can pass before the rest of the epic lands. Choose commands that leave nothing behind in the repository: for example `go build -o /dev/null ./cmd/api`, since a plain `go build ./cmd/api` drops a binary in the working directory.
 
 ## Before you decompose
 
@@ -90,6 +95,7 @@ If the goal is ambiguous in a way that would change how you cut it, ask before p
 Before you record anything, go through each epic:
 
 - List the files each issue changes. A file that appears under two issues is a collision; resolve it with one of the techniques above.
+- List what each issue's "Done when" commands use while they run: ports, databases, fixed temp paths. Two issues in one epic that use the same one will interfere when their checks run at the same moment. Give each its own, for example a different port per issue.
 - For each issue, ask whether it could start right now if only the earlier epics were finished.
 - Read each issue as though you knew nothing else. Anything you had to fill in from memory is missing from the issue.
 - Look at every dependency and confirm its one-sentence reason still holds.

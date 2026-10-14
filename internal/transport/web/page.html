@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · codeplat</title>
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #dfe3e8; --text: #1c2430; --muted: #66707d;
+    --accent: #2f6fde; --todo: #8a94a3; --progress: #c77700; --done: #2a8f5a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1d2128; --line: #2e343d; --text: #e6e9ee; --muted: #98a2b0;
+      --accent: #6ea0ff; --todo: #7d8794; --progress: #e3a13a; --done: #4fbf85;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+  a { color: inherit; text-decoration: none; }
+  header { display: flex; align-items: flex-end; gap: 24px; padding: 12px 16px 0; background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .brand { font-weight: 700; padding-bottom: 10px; }
+  .tabs { display: flex; gap: 4px; }
+  .tab { padding: 8px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--muted); white-space: nowrap; }
+  .tab small { margin-left: 6px; font-size: 12px; opacity: .8; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); background: var(--bg); border-color: var(--line); margin-bottom: -1px; font-weight: 600; }
+  main { padding: 16px; }
+  .empty { color: var(--muted); }
+  .board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; overflow-x: auto; }
+  .column { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 120px; }
+  .column h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .count { font-weight: 400; }
+  .card { display: block; padding: 10px; margin-bottom: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .card:hover { border-color: var(--accent); }
+  .card .id { font-size: 12px; color: var(--muted); }
+  .card .title { margin: 2px 0 8px; overflow-wrap: anywhere; }
+  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .badge { padding: 1px 8px; border-radius: 10px; border: 1px solid currentColor; font-size: 12px; white-space: nowrap; }
+  .badge.todo { color: var(--todo); }
+  .badge.in_progress { color: var(--progress); }
+  .badge.done { color: var(--done); }
+  .none { margin: 0; font-size: 13px; color: var(--muted); }
+  .issue { max-width: 900px; }
+  .back { color: var(--accent); font-size: 14px; }
+  .issue h1 { margin: 8px 0; font-size: 22px; overflow-wrap: anywhere; }
+  .issue h2 { margin: 24px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  pre { margin: 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, monospace; }
+  .comment { margin-bottom: 8px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .comment .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .comment .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+</head>
+<body hx-boost="true">
+<header>
+  <span class="brand">codeplat</span>
+  <nav class="tabs">
+    {{range .Projects}}<a class="tab{{if eq .Key $.Active}} active{{end}}" href="/projects/{{.Key}}">{{.Name}}<small>{{.Key}}</small></a>
+    {{end}}
+  </nav>
+</header>
+<main>
+{{if .Message}}<p class="empty">{{.Message}}</p>{{end}}
+
+{{if .Board}}
+<section id="board" class="board" hx-get="/projects/{{.Active}}" hx-trigger="every 3s" hx-select="#board" hx-target="#board" hx-swap="outerHTML">
+  {{range .Board}}
+  <div class="column">
+    <h2>{{.Name}} <span class="count">{{len .Issues}}</span></h2>
+    {{range .Issues}}
+    <a class="card" href="/issues/{{.ID}}">
+      <div class="id">{{.ID}}</div>
+      <div class="title">{{.Title}}</div>
+      <div class="meta">
+        <span class="badge {{.Status}}">{{label .Status}}</span>
+        {{if .Assignee}}<span>{{.Assignee}}</span>{{end}}
+      </div>
+    </a>
+    {{else}}
+    <p class="none">Nothing here</p>
+    {{end}}
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{with .Issue}}
+<article class="issue">
+  <a class="back" href="/projects/{{.ProjectKey}}">&larr; Back to board</a>
+  <h1>{{.ID}} · {{.Title}}</h1>
+  <div id="live" hx-get="/issues/{{.ID}}" hx-trigger="every 3s" hx-select="#live" hx-target="#live" hx-swap="outerHTML">
+    <div class="meta">
+      <span class="badge">{{label .Stage}}</span>
+      <span class="badge {{.Status}}">{{label .Status}}</span>
+      <span>{{if .Assignee}}Assigned to {{.Assignee}}{{else}}Unassigned{{end}}</span>
+      <span>Created {{ts .CreatedAt}}</span>
+      <span>Updated {{ts .UpdatedAt}}</span>
+    </div>
+    <h2>Comments ({{len $.Comments}})</h2>
+    {{range $.Comments}}
+    <div class="comment">
+      <div class="who">#{{.Number}} · {{if .Author}}{{.Author}}{{else}}no author{{end}} · {{ts .CreatedAt}}</div>
+      <div class="body">{{.Body}}</div>
+    </div>
+    {{else}}
+    <p class="none">No comments yet</p>
+    {{end}}
+  </div>
+  <h2>Description</h2>
+  {{if .Description}}<pre>{{.Description}}</pre>{{else}}<p class="none">No description</p>{{end}}
+</article>
+{{end}}
+</main>
+</body>
+</html>

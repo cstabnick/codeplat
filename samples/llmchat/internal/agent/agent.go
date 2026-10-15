@@ -90,6 +90,13 @@ func (e *Engine) Run(ctx context.Context, conversationID, text string, emit func
 	pinned := ""
 
 	for step := 0; step < e.opts.MaxSteps; step++ {
+		// After the last tool-call step the turn has no remaining call to run.
+		// A cancel now is the stop: end the turn as stopped, not as an error.
+		if step+1 == e.opts.MaxSteps && ctx.Err() != nil {
+			emit(chat.Event{Type: chat.EventStopped})
+			emit(chat.Event{Type: chat.EventDone})
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -130,7 +137,9 @@ func (e *Engine) Run(ctx context.Context, conversationID, text string, emit func
 
 		for _, call := range reply.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				return err
+				emit(chat.Event{Type: chat.EventStopped})
+				emit(chat.Event{Type: chat.EventDone})
+				return nil
 			}
 			result, err := e.runCall(ctx, conv, call, emit)
 			if err != nil {

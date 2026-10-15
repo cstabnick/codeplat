@@ -114,7 +114,8 @@ const (
 	EventApproval   = "approval"    // the person must approve that call
 	EventToolResult = "tool_result" // the call finished (or was denied)
 	EventError      = "error"
-	EventDone       = "done" // always the last event of a turn
+	EventStopped    = "stopped" // the person stopped the turn; followed by done
+	EventDone       = "done"    // always the last event of a turn
 )
 
 // Event is one thing that happens during a turn. Type says which fields are set.

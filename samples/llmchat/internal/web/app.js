@@ -10,6 +10,7 @@
   const promptEl = $("prompt");
   const modelEl = $("model");
   const sendBtn = $("send");
+  const stopBtn = $("stop");
   const newChatBtn = $("new-chat");
   const deleteBtn = $("delete");
   const titleEl = $("title");
@@ -19,6 +20,7 @@
   let conversations = [];
   let current = null; // the open conversation, or null
   let busy = false; // a message is streaming
+  let activeId = null; // the conversation whose turn is streaming, or null
   let stick = true; // keep the log scrolled to the bottom
 
   // renderMarkdown escapes the text, then turns fenced blocks and inline
@@ -356,6 +358,16 @@
     busy = on;
     promptEl.disabled = on;
     sendBtn.disabled = on;
+    stopBtn.disabled = !on;
+  }
+
+  // stopApprovals ends the approval prompts still waiting when a turn stops:
+  // the turn no longer exists to receive an answer.
+  function stopApprovals() {
+    for (const box of logEl.querySelectorAll(".approval:not(.done)")) {
+      box.classList.add("done");
+      box.textContent = "Stopped";
+    }
   }
 
   // sendMessage posts the prompt to the open conversation and streams the
@@ -381,6 +393,7 @@
     }
 
     const id = current.id;
+    activeId = id;
     stick = true;
     logEl.appendChild(userBubble(text));
     promptEl.value = "";
@@ -444,6 +457,10 @@
         case "error":
           showError(String(ev.error || "unknown error"));
           break;
+        case "stopped":
+          stopApprovals();
+          stopNote();
+          break;
         case "done":
           finished = true;
           break;
@@ -490,6 +507,7 @@
       bubble.content.textContent = "Error: " + err.message;
     } finally {
       bubble.setMeta(metaText(bubbleInfo));
+      activeId = null;
       setBusy(false);
       promptEl.focus();
       keepScrolled(true);
@@ -500,6 +518,31 @@
       }
     }
   }
+
+  // stopNote writes the note that a turn was stopped at the end of the log.
+  function stopNote() {
+    const div = document.createElement("div");
+    div.className = "msg note";
+    div.textContent = "Turn stopped";
+    logEl.appendChild(div);
+    keepScrolled();
+  }
+
+  // Stop asks the server to end the running turn. The server ends it and
+  // sends a stopped event on the open stream, so the page only sends the
+  // request. A 404 means the turn had already finished, which is not an error.
+  stopBtn.addEventListener("click", async function () {
+    if (!activeId) return;
+    stopBtn.disabled = true;
+    try {
+      await request("POST", conversationURL(activeId) + "/stop");
+    } catch (err) {
+      if (!String(err.message).startsWith("Error 404")) {
+        showError(err.message);
+        if (busy) stopBtn.disabled = false;
+      }
+    }
+  });
 
   form.addEventListener("submit", function (e) {
     e.preventDefault();

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"llmchat/internal/chat"
 )
@@ -98,7 +99,7 @@ func NewHandler(store chat.Store, runner Runner, approvals *Approvals, routes fu
 		approvals: approvals,
 		routes:    routes,
 		log:       logger,
-		busy:      make(map[string]bool),
+		turns:     make(map[string]*turn),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
@@ -110,7 +111,15 @@ func NewHandler(store chat.Store, runner Runner, approvals *Approvals, routes fu
 	mux.HandleFunc("DELETE /api/conversations/{id}", h.deleteConversation)
 	mux.HandleFunc("POST /api/conversations/{id}/messages", h.sendMessage)
 	mux.HandleFunc("POST /api/conversations/{id}/approvals/{call}", h.answerApproval)
+	mux.HandleFunc("POST /api/conversations/{id}/stop", h.stopTurn)
 	return mux
+}
+
+// turn is one running turn. cancel ends the turn's context; stopped records
+// that the person pressed Stop, as opposed to the client leaving.
+type turn struct {
+	cancel  context.CancelFunc
+	stopped atomic.Bool
 }
 
 type handler struct {
@@ -120,8 +129,8 @@ type handler struct {
 	routes    func(ctx context.Context) ([]string, error)
 	log       *log.Logger
 
-	mu   sync.Mutex
-	busy map[string]bool // conversation IDs with a turn running
+	mu    sync.Mutex
+	turns map[string]*turn // running turns, keyed by conversation ID
 }
 
 const maxBody = 1 << 20
@@ -258,22 +267,40 @@ func (h *handler) deleteConversation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// startTurn claims the conversation for a turn. It returns false when a
-// turn is already running for it.
-func (h *handler) startTurn(id string) bool {
+// startTurn claims the conversation for a turn and registers its cancel. It
+// returns nil when a turn is already running for it.
+func (h *handler) startTurn(id string, cancel context.CancelFunc) *turn {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.busy[id] {
-		return false
+	if _, busy := h.turns[id]; busy {
+		return nil
 	}
-	h.busy[id] = true
-	return true
+	t := &turn{cancel: cancel}
+	h.turns[id] = t
+	return t
 }
 
 func (h *handler) endTurn(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.busy, id)
+	delete(h.turns, id)
+}
+
+// stopTurn ends the running turn of a conversation by cancelling its context.
+// The turn then emits a stopped event and done on its open stream. It returns
+// ErrNotFound when no turn is running.
+func (h *handler) stopTurn(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	h.mu.Lock()
+	t, ok := h.turns[id]
+	h.mu.Unlock()
+	if !ok {
+		h.writeError(w, fmt.Errorf("no turn running in conversation %s: %w", id, chat.ErrNotFound))
+		return
+	}
+	t.stopped.Store(true)
+	t.cancel()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +321,12 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, fmt.Errorf("text is empty: %w", chat.ErrInvalid))
 		return
 	}
-	if !h.startTurn(id) {
+	// The turn runs under its own context, cancelled by stopTurn, by the
+	// client leaving (the request context ends), or by returning here.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	t := h.startTurn(id, cancel)
+	if t == nil {
 		h.writeJSON(w, http.StatusConflict, map[string]string{"error": "a turn is already running for this conversation"})
 		return
 	}
@@ -331,8 +363,18 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.runner.Run(r.Context(), id, text, emit); err != nil {
-		h.log.Printf("api: turn in conversation %s: %v", id, err)
+	err := h.runner.Run(ctx, id, text, emit)
+	switch {
+	case err != nil && t.stopped.Load() && ctx.Err() != nil:
+		// The person pressed Stop. The error is the cancellation, not a failure.
+		emit(chat.Event{Type: chat.EventStopped})
+		emit(chat.Event{Type: chat.EventDone})
+	case err != nil:
+		if r.Context().Err() != nil {
+			h.log.Printf("api: client left turn in conversation %s: %v", id, err)
+		} else {
+			h.log.Printf("api: turn in conversation %s: %v", id, err)
+		}
 		emit(chat.Event{Type: chat.EventError, Error: err.Error()})
 		emit(chat.Event{Type: chat.EventDone})
 	}

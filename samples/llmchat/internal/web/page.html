@@ -51,6 +51,8 @@ button { cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
 #send { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+#stop { border-color: var(--err); color: var(--err); }
+.msg.note { border: 0; padding: 0; color: var(--muted); font-style: italic; }
 
 #sidebar {
   display: flex;
@@ -190,6 +192,7 @@ pre.args, pre.result {
   <form id="composer">
     <textarea id="prompt" rows="3" placeholder="Ask something…" required></textarea>
     <button id="send" type="submit">Send</button>
+    <button id="stop" type="button" disabled>Stop</button>
   </form>
 </main>
 <script src="/app.js" defer></script>

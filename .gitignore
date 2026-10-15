@@ -4,3 +4,4 @@ bin/
 *.db-wal
 # The dev tracker database is committed; its write-ahead log is not.
 !data/codeplat.dev.db
+.run/

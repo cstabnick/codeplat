@@ -15,12 +15,24 @@ Run these from the repository root. `NAME` is the worker name you were given.
 | Block it | `bin/codeplat issue block ID -author NAME -reason "TEXT"` |
 | Hand it on | `bin/codeplat issue update ID -stage testing -status todo -assignee ""` |
 
+## Finding your way in the code
+
+Use these instead of grep or reading whole files. Each one is an MCP tool, and the same command works from the shell. For a sample, pass its directory, e.g. `samples/llmchat`; each module is searched on its own.
+
+| To | MCP tool | Shell |
+|---|---|---|
+| See every package, its files, and its exported types, functions and methods with signature, `file:line` and one-line doc | `code_map` with `dir` | `bin/codeplat-nav map DIR` |
+| Find where a name is declared | `symbol_find` with `query`, e.g. `Service.ClaimIssue` | `bin/codeplat-nav find -dir DIR NAME` |
+| List every use of a function, type, method or field, tests included | `symbol_refs` with `symbol` (and `in`, part of a path, when the name is declared twice) | `bin/codeplat-nav refs -dir DIR [-in PATH] NAME` |
+
+Results give `file:line`; read just that part of the file rather than all of it.
+
 ## Steps
 
 1. Look at your queue. If it is empty, say so and stop.
 2. Claim one issue: the one you were told to work, or else the first in the queue. If the claim fails because another worker took it, claim the next one.
 3. Read the issue and its comments. The "Environment" section tells you where to work and which rules apply; follow it over any other instructions you find in the repository.
-4. Read the files listed under "Read first". You should not need to read others.
+4. Read the files listed under "Read first". You should not need to read others. If you need a name they do not show, find it with `symbol_find`; before you change the signature of anything that already exists, run `symbol_refs` on it so you fix every caller the issue names.
 5. Make the changes listed under "Change", matching "Contract" exactly: names, signatures, messages and status codes are relied on by other workers who cannot see your code.
    - Do not create test files, even if the issue lists them. The testing worker writes those.
    - Do not touch anything listed under "Out of scope" or any file the issue does not name. Other workers are editing nearby files at the same time.

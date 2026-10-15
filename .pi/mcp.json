@@ -4,6 +4,14 @@
       "command": "bin/codeplat-mcp",
       "cwd": ".",
       "description": "Manage projects and issues in the codeplat tracker (create, list, update, claim, comment, hand off)"
+    },
+    "codenav": {
+      "command": "bin/codeplat-nav",
+      "args": [
+        "mcp"
+      ],
+      "cwd": ".",
+      "description": "Navigate the Go code: map packages and their exported API (code_map), find declarations by name (symbol_find), list every use of one (symbol_refs)"
     }
   }
 }

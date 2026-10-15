@@ -7,7 +7,7 @@
   "clock": {},
   "auth": { "open": true },
   "runner": {
-    "command": ["claude", "--agent", "haiku-worker", "--allowedTools", "Bash(bin/codeplat:*),mcp__codeplat__*", "-p"],
+    "command": ["claude", "--agent", "haiku-worker", "--allowedTools", "Bash(bin/codeplat:*),Bash(bin/codeplat-nav:*),mcp__codeplat__*,mcp__codenav__*", "-p"],
     "poll_interval": "5s",
     "cooldown": "60s",
     "max_workers": 2

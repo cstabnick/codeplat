@@ -16,6 +16,18 @@ Run these from the repository root. `NAME` is the worker name you were given.
 | Block it | `bin/codeplat issue block ID -author NAME -reason "TEXT"` |
 | Hand it on | `bin/codeplat issue update ID -stage implementation -status todo -assignee ""` |
 
+## Finding your way in the code
+
+Use these instead of grep or reading whole files. Each one is an MCP tool, and the same command works from the shell. For a sample, pass its directory, e.g. `samples/llmchat`; each module is searched on its own.
+
+| To | MCP tool | Shell |
+|---|---|---|
+| See every package, its files, and its exported types, functions and methods with signature, `file:line` and one-line doc | `code_map` with `dir` | `bin/codeplat-nav map DIR` |
+| Find where a name is declared | `symbol_find` with `query`, e.g. `Service.ClaimIssue` | `bin/codeplat-nav find -dir DIR NAME` |
+| List every use of a function, type, method or field, tests included | `symbol_refs` with `symbol` (and `in`, part of a path, when the name is declared twice) | `bin/codeplat-nav refs -dir DIR [-in PATH] NAME` |
+
+Results give `file:line`; read just that part of the file rather than all of it.
+
 ## Steps
 
 1. Look at your queue. If it is empty, say so and stop.
@@ -23,7 +35,8 @@ Run these from the repository root. `NAME` is the worker name you were given.
 3. Read the issue and its comments.
 4. Check the issue against the repository:
    - Every file it tells the worker to read exists, at that path.
-   - Every name, signature and command it quotes matches what is really there.
+   - Every name, signature and command it quotes matches what is really there. Check each name with `symbol_find`, not by reading files.
+   - Every caller of a function, type or field whose signature the issue changes is handled. `symbol_refs` lists them; a call site in a file the issue does not name must be added to "Change", or the change will not build.
    - The commands under "Done when" can be run in the environment the issue describes.
    - Nothing in it contradicts itself.
 5. Correct the description where the repository shows it is wrong, or where the implementer would have to guess. Keep its sections. To edit, write the whole new description to a file and use the replace command.

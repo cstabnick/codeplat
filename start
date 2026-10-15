@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# start builds and runs every server in this repository and its samples, with
+# the LLM router on the Bonsai config. Ctrl+C, or ./stop from another
+# terminal, stops them all.
+#
+#   ./start                      everything except the worker runner
+#   ./start --runner             also the runner, which launches Claude workers
+#   ./start --only router,chat   just these services
+#   ./start --skip chess,decide  everything but these
+#   ./start --no-build           use the binaries already in bin/
+#   ./start --list               print the services and exit
+set -uo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bin="$root/bin"
+run="$root/.run"
+export PATH="$PATH:$HOME/.local/go/bin:$HOME/go/bin"
+
+# name|directory|command|port|what
+services=(
+  "tracker-rest|.|$bin/codeplat-rest|8080|tracker REST API"
+  "tracker-web|.|$bin/codeplat-web|8090|tracker web UI"
+  "router|samples/llmrouter|$bin/llmrouter -config examples/bonsai-wsl.json|8083|LLM router with Bonsai (starts Ollama and llama-server)"
+  "chat|samples/llmchat|$bin/llmchat|8084|llmchat"
+  "sandbox|samples/sandbox|$bin/sandbox-server|8087|sandbox server (Docker)"
+  "decide|samples/decide|$bin/decide-server|8085|decide server"
+  "chess|samples/chess|$bin/chess|8086|chess"
+  "bookmarks-api|samples/bookmarks|$bin/bookmarks-api|8081|bookmarks API"
+  "bookmarks-ui|samples/bookmarks|$bin/bookmarks-ui|8082|bookmarks UI"
+  "runner|.|$bin/codeplat-runner|-|worker runner (opt-in: --runner)"
+)
+
+only="" skip="runner" build=1
+while (($#)); do
+  case "$1" in
+    --only) only="$2"; skip=""; shift 2 ;;
+    --skip) skip="$skip,$2"; shift 2 ;;
+    --runner) skip="${skip//runner/}"; shift ;;
+    --no-build) build=0; shift ;;
+    --list)
+      for s in "${services[@]}"; do IFS='|' read -r n _ _ p w <<<"$s"; printf '%-14s %-5s %s\n' "$n" "$p" "$w"; done
+      exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "start: unknown argument $1 (see --help)" >&2; exit 2 ;;
+  esac
+done
+
+wanted() {
+  if [[ -n "$only" ]]; then [[ ",$only," == *",$1,"* ]]; else [[ ",$skip," != *",$1,"* ]]; fi
+}
+
+listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+if [[ -f "$run/start.pid" ]] && kill -0 "$(cat "$run/start.pid")" 2>/dev/null; then
+  echo "start: already running as pid $(cat "$run/start.pid"); run ./stop first" >&2
+  exit 1
+fi
+
+if ((build)); then
+  echo "building..."
+  make -s -C "$root" build || exit 1
+  for b in "llmrouter:llmrouter" "llmchat:llmchat" "sandbox:sandbox-server" "decide:decide-server" \
+           "chess:chess" "bookmarks:api:bookmarks-api" "bookmarks:ui:bookmarks-ui"; do
+    IFS=: read -r dir a b2 <<<"$b"
+    cmd="$a" out="${b2:-$a}"
+    (cd "$root/samples/$dir" && go build -o "$bin/$out" "./cmd/$cmd") || exit 1
+  done
+fi
+
+if wanted sandbox && ! timeout 5 docker info >/dev/null 2>&1; then
+  echo "start: Docker is not reachable; skipping sandbox (see samples/sandbox/README.md)" >&2
+  skip="$skip,sandbox"; only="${only//sandbox/}"
+fi
+
+pids=() names=()
+for s in "${services[@]}"; do
+  IFS='|' read -r name dir cmd port what <<<"$s"
+  wanted "$name" || continue
+  if [[ "$port" != "-" ]] && listening "$port"; then
+    printf '%-14s already listening on %s; not starting it\n' "$name" "$port"
+    continue
+  fi
+  # setsid gives each service its own process group, so stopping it also
+  # stops anything it started, such as Ollama.
+  setsid bash -c "cd '$root/$dir' && exec $cmd" \
+    > >(sed -u "s/^/$(printf '%-14s' "$name") | /") 2>&1 &
+  pids+=("$!") names+=("$name")
+  [[ "$port" != "-" ]] && what="$what  http://127.0.0.1:$port"
+  printf '%-14s started: %s\n' "$name" "$what"
+done
+((${#pids[@]})) || { echo "nothing to start"; exit 0; }
+# ./stop reads these: this script's pid, and each service's process group.
+mkdir -p "$run"
+echo $$ >"$run/start.pid"
+printf '%s\n' "${pids[@]}" >"$run/groups"
+
+stopping=0
+stop() {
+  ((stopping)) && return; stopping=1
+  echo; echo "stopping..."
+  for p in "${pids[@]}"; do kill -TERM -- "-$p" 2>/dev/null; done
+  # The router runs llama-server's stop command on the way out; give it time.
+  for _ in $(seq 30); do
+    alive=0; for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
+    ((alive)) || break; sleep 0.5
+  done
+  for p in "${pids[@]}"; do kill -KILL -- "-$p" 2>/dev/null; done
+  wait 2>/dev/null
+  rm -f "$run/start.pid" "$run/groups"
+}
+trap 'stop; exit 0' INT TERM
+trap stop EXIT
+
+echo "all started; Ctrl+C stops everything"
+while :; do
+  wait -n "${pids[@]}" 2>/dev/null
+  running=0
+  for i in "${!pids[@]}"; do
+    if kill -0 "${pids[$i]}" 2>/dev/null; then running=1
+    elif [[ -n "${names[$i]}" ]]; then printf '%-14s exited\n' "${names[$i]}"; names[$i]=""; fi
+  done
+  ((running)) || { echo "every service has exited"; break; }
+done

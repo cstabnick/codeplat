@@ -42,7 +42,7 @@ func TestDevRunnerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude", "--agent", "haiku-worker", "--allowedTools", "Bash(bin/codeplat:*),mcp__codeplat__*", "-p"}
+	want := []string{"claude", "--agent", "haiku-worker", "--allowedTools", "Bash(bin/codeplat:*),Bash(bin/codeplat-nav:*),mcp__codeplat__*,mcp__codenav__*", "-p"}
 	if strings.Join(cfg.Runner.Command, " ") != strings.Join(want, " ") {
 		t.Errorf("Runner.Command = %q, want %q", cfg.Runner.Command, want)
 	}

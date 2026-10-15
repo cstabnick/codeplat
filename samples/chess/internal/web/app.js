@@ -231,6 +231,10 @@ function renderBoard() {
       sq.className = "sq " + ((file + rank) % 2 === 0 ? "dark" : "light");
       sq.dataset.square = name;
       sq.setAttribute("aria-label", piece ? `${name}, ${piece}` : name);
+      if (piece) {
+        const isBlack = piece === piece.toLowerCase() && piece !== piece.toUpperCase();
+        sq.classList.add(isBlack ? "piece-black" : "piece-white");
+      }
       sq.textContent = piece ? PIECES[piece] : "";
       if (name === state.selected) sq.classList.add("selected");
       if (targets.has(name)) sq.classList.add("target");

@@ -9,12 +9,14 @@ import (
 	"codeplat/internal/core"
 )
 
-type tool struct {
+// Tool is one MCP tool. Call returns a value that is sent as indented
+// JSON, or as is when it is a string.
+type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
 
-	call func(ctx context.Context, args json.RawMessage) (any, error)
+	Call func(ctx context.Context, args json.RawMessage) (any, error) `json:"-"`
 }
 
 const (
@@ -22,8 +24,8 @@ const (
 	statusSchema = `{"type":"string","enum":["todo","in_progress","done","blocked"]}`
 )
 
-func tools(svc *core.Service) []tool {
-	return []tool{
+func tools(svc *core.Service) []Tool {
+	return []Tool{
 		{
 			Name:        "project_create",
 			Description: "Create a project. Issues in it are numbered KEY-1, KEY-2, and so on.",
@@ -31,7 +33,7 @@ func tools(svc *core.Service) []tool {
 				"key":{"type":"string","description":"2-10 letters or digits starting with a letter, e.g. PLAT"},
 				"name":{"type":"string"}},
 				"required":["key","name"]}`),
-			call: typed(func(ctx context.Context, in core.NewProject) (any, error) {
+			Call: Typed(func(ctx context.Context, in core.NewProject) (any, error) {
 				return svc.CreateProject(ctx, in)
 			}),
 		},
@@ -39,7 +41,7 @@ func tools(svc *core.Service) []tool {
 			Name:        "project_list",
 			Description: "List all projects.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-			call: typed(func(ctx context.Context, _ struct{}) (any, error) {
+			Call: Typed(func(ctx context.Context, _ struct{}) (any, error) {
 				return svc.ListProjects(ctx)
 			}),
 		},
@@ -56,7 +58,7 @@ func tools(svc *core.Service) []tool {
 				"epic":{"type":"integer","minimum":0,"description":"epic number within the issue's parent, 0 for none"},
 				"depends_on":{"type":"array","items":{"type":"string"},"description":"IDs of issues that must be done first, e.g. PLAT-4"}},
 				"required":["project_key","title"]}`),
-			call: typed(func(ctx context.Context, in core.NewIssue) (any, error) {
+			Call: Typed(func(ctx context.Context, in core.NewIssue) (any, error) {
 				return svc.CreateIssue(ctx, in)
 			}),
 		},
@@ -72,7 +74,7 @@ func tools(svc *core.Service) []tool {
 				"limit":{"type":"integer","minimum":1,"maximum":200,"description":"at most this many issues; default 50"},
 				"offset":{"type":"integer","minimum":0,"description":"skip this many issues"},
 				"ready":{"type":"boolean","description":"true keeps only issues that nothing blocks"}}}`),
-			call: typed(func(ctx context.Context, in core.IssueFilter) (any, error) {
+			Call: Typed(func(ctx context.Context, in core.IssueFilter) (any, error) {
 				return svc.ListIssues(ctx, in)
 			}),
 		},
@@ -82,7 +84,7 @@ func tools(svc *core.Service) []tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"id":{"type":"string"}},
 				"required":["id"]}`),
-			call: typed(func(ctx context.Context, in struct {
+			Call: Typed(func(ctx context.Context, in struct {
 				ID string `json:"id"`
 			}) (any, error) {
 				return svc.GetIssue(ctx, in.ID)
@@ -102,7 +104,7 @@ func tools(svc *core.Service) []tool {
 				"epic":{"type":"integer","minimum":0,"description":"epic number within the issue's parent, 0 for none"},
 				"depends_on":{"type":"array","items":{"type":"string"},"description":"IDs of issues that must be done first, e.g. PLAT-4"}},
 				"required":["id"]}`),
-			call: typed(func(ctx context.Context, in struct {
+			Call: Typed(func(ctx context.Context, in struct {
 				ID string `json:"id"`
 				core.IssuePatch
 			}) (any, error) {
@@ -116,7 +118,7 @@ func tools(svc *core.Service) []tool {
 				"id":{"type":"string"},
 				"assignee":{"type":"string","description":"a name that identifies you, the worker"}},
 				"required":["id","assignee"]}`),
-			call: typed(func(ctx context.Context, in struct {
+			Call: Typed(func(ctx context.Context, in struct {
 				ID       string `json:"id"`
 				Assignee string `json:"assignee"`
 			}) (any, error) {
@@ -131,7 +133,7 @@ func tools(svc *core.Service) []tool {
 				"author":{"type":"string","description":"the worker that is blocked"},
 				"reason":{"type":"string","description":"why the issue cannot be finished"}},
 				"required":["id","author","reason"]}`),
-			call: typed(func(ctx context.Context, in struct {
+			Call: Typed(func(ctx context.Context, in struct {
 				ID     string `json:"id"`
 				Author string `json:"author"`
 				Reason string `json:"reason"`
@@ -148,7 +150,7 @@ func tools(svc *core.Service) []tool {
 				"number":{"type":"integer","minimum":1,"description":"epic number within the parent"},
 				"name":{"type":"string"}},
 				"required":["project_key","number","name"]}`),
-			call: typed(func(ctx context.Context, in core.Epic) (any, error) {
+			Call: Typed(func(ctx context.Context, in core.Epic) (any, error) {
 				return svc.SetEpic(ctx, in)
 			}),
 		},
@@ -158,7 +160,7 @@ func tools(svc *core.Service) []tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"project_key":{"type":"string"}},
 				"required":["project_key"]}`),
-			call: typed(func(ctx context.Context, in struct {
+			Call: Typed(func(ctx context.Context, in struct {
 				ProjectKey string `json:"project_key"`
 			}) (any, error) {
 				return svc.ListEpics(ctx, in.ProjectKey)
@@ -172,7 +174,7 @@ func tools(svc *core.Service) []tool {
 				"body":{"type":"string"},
 				"author":{"type":"string","description":"who is commenting"}},
 				"required":["issue_id","body"]}`),
-			call: typed(func(ctx context.Context, in core.NewComment) (any, error) {
+			Call: Typed(func(ctx context.Context, in core.NewComment) (any, error) {
 				return svc.AddComment(ctx, in)
 			}),
 		},
@@ -184,7 +186,7 @@ func tools(svc *core.Service) []tool {
 				"limit":{"type":"integer","minimum":1,"maximum":200,"description":"at most this many comments; default 50"},
 				"offset":{"type":"integer","minimum":0,"description":"skip this many comments"}},
 				"required":["issue_id"]}`),
-			call: typed(func(ctx context.Context, in struct {
+			Call: Typed(func(ctx context.Context, in struct {
 				IssueID string `json:"issue_id"`
 				core.Page
 			}) (any, error) {
@@ -194,9 +196,9 @@ func tools(svc *core.Service) []tool {
 	}
 }
 
-// typed adapts a handler with a concrete argument struct to the raw JSON
+// Typed adapts a handler with a concrete argument struct to the raw JSON
 // arguments of a tools/call request.
-func typed[In any](fn func(context.Context, In) (any, error)) func(context.Context, json.RawMessage) (any, error) {
+func Typed[In any](fn func(context.Context, In) (any, error)) func(context.Context, json.RawMessage) (any, error) {
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in In
 		if len(raw) > 0 {

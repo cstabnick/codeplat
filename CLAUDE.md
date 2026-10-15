@@ -3,6 +3,7 @@
 Read [ARCHITECTURE.md](ARCHITECTURE.md) first; its Rules section is binding.
 
 - Go lives at `~/.local/go/bin` on this machine; add it to `PATH` if `go` is not found.
+- `bin/codeplat-nav` (MCP server `codenav`) maps the code and looks up symbols; its symbol lookups need gopls: `go install golang.org/x/tools/gopls@latest`.
 - `make test` must pass before a change is done. `make build` builds every binary under `cmd/`.
 - Business rules go in `internal/core`. Do not add validation to a transport.
 - Only `internal/app` may choose an implementation from config.

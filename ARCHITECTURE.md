@@ -16,6 +16,7 @@ internal/process               starts an operating-system process for a worker
 internal/auth                  core.Authenticator implementations: open, and static tokens
 internal/transport/httpauth    token check shared by the REST and web transports
 config/                        one JSON file per environment, plus the loader
+cmd/nav, internal/codenav      code navigation for agents: a map of a module's exported API, and symbol lookup through gopls
 ```
 
 Dependencies point inward: transports and stores import `core`; `core` imports nothing of ours.
@@ -51,6 +52,7 @@ Dependencies point inward: transports and stores import `core`; `core` imports n
 - **Blocking:** a blocked issue keeps its assignee and stage. It is not claimable, because `ClaimIssue` takes only `todo`, and it is in no queue, because queues are status `todo`. A person resumes it with `issue update` and a status, or requeues it with status `todo` and an empty assignee.
 - **Worker runner:** `cmd/runner` polls each stage's queue (`todo` and ready) through `core.Service.ListIssues` and starts a headless worker for each issue and stage that has none running, with the prompt file for that stage. The worker claims its own issue, so the runner does not. The command comes from `runner.command` in the config. At most `max_workers` run at once. Stopping the runner does not stop its workers, so a claim is never left behind by a kill.
 - **Migrations:** the SQLite store applies an ordered list of statements and counts them in `PRAGMA user_version`. Append to the list; never edit an entry.
+- **Code navigation:** `codeplat-nav` is separate from the tracker: it reads source, not the store, so it has no use case in `core.Service`, no config and no REST route. `codeplat-nav mcp` serves `code_map`, `symbol_find` and `symbol_refs` as the MCP server `codenav` through the same JSON-RPC code as `codeplat-mcp` (`mcp.NewToolServer`); its other subcommands print the same text for a shell. The map comes from `go/doc` on every request, so it is never stale and is not committed. Symbol lookups run the `gopls` CLI in the module that contains the given directory, so each sample is its own workspace; `gopls` is found on `PATH` or in Go's install directory, and the tools report how to install it when it is missing. The worker prompts tell agents to use these instead of grep.
 - **Not built yet:** pruning the event log.
 
 ## Adding things

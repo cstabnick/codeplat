@@ -6,6 +6,8 @@ You are testing tracker issue ISSUE_ID. Another worker has made the change it de
 
 - Act, don't deliberate. Before each tool call, think in at most 3 sentences.
 - Never re-read a file you have already read, unless you have edited it since and need the new text.
+- To find code, use the codenav tools, not grep. code_map with a dir lists each package's files and exported names with file:line. symbol_find with a query gives where a name is declared. symbol_refs with a symbol lists every place it is used. For a sample, pass dir "samples/<name>".
+- Your context is small, and it is lost when it fills up. Never read a whole file you have not been told to read: call read with offset and limit, starting a few lines before the line a result points to, at most 80 lines at a time. Never read every file in a package.
 - Copy the style of an existing test in the same package; don't design a new one. Write tests through `apptest.New(t)` where the package has one.
 - Write one test per behaviour the issue names in "Done when" or "Contract". Don't add tests for anything else.
 - If a test fails, look at the failure once, decide whether the code or the test is wrong, and fix that one. If the same test fails after two fixes, go to "If you cannot finish".
@@ -17,9 +19,9 @@ Repo: /home/koni/coding-platform-for-agents. Go is at ~/.local/go/bin; add it to
 
 1. Call issue_claim with id "ISSUE_ID" and assignee "bonsai".
 2. Call issue_get with id "ISSUE_ID". Its description is your task. Call comment_list with the same id; the implementation worker's comment names the files it changed and what to test.
-3. Read the files the implementation worker changed, and one existing test file in the same package to copy its style.
+3. Read the files the implementation worker changed. Call symbol_refs on a function they changed; read one `_test.go` file it lists, in the same package, to copy its style.
 4. Write the tests. Test against "Contract", not against what the code happens to do. If the issue says no tests are needed, write none.
-5. Run every command under "Done when".
+5. Run every command under "Done when". Run `go test` without `-v`, and end each command with `2>&1 | tail -40`, so you see the failures and not every passing test.
 6. If a check fails because the code doesn't match the contract, fix the code. If it fails because your test is wrong, fix the test. Never weaken a test to make it pass.
 7. Call comment_add on ISSUE_ID with author "bonsai": the tests you added, the commands you ran with their results, and any fix you made to non-test code. Keep it to one paragraph.
 8. Call issue_update with id "ISSUE_ID" and status "done". Stop.

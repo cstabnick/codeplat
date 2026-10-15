@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	serverName    = "codeplat"
 	serverVersion = "0.1.0"
 	maxLineBytes  = 4 << 20
 
@@ -29,12 +28,19 @@ const (
 var protocolVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
 
 type Server struct {
+	name  string
 	log   *slog.Logger
-	tools []tool
+	tools []Tool
 }
 
+// NewServer serves the tracker's tools as the server "codeplat".
 func NewServer(svc *core.Service, log *slog.Logger) *Server {
-	return &Server{log: log, tools: tools(svc)}
+	return NewToolServer("codeplat", tools(svc), log)
+}
+
+// NewToolServer serves the given tools under the given server name.
+func NewToolServer(name string, tools []Tool, log *slog.Logger) *Server {
+	return &Server{name: name, log: log, tools: tools}
 }
 
 type request struct {
@@ -126,7 +132,7 @@ func (s *Server) dispatch(ctx context.Context, req request) (any, *rpcError) {
 		return map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]string{"name": serverName, "version": serverVersion},
+			"serverInfo":      map[string]string{"name": s.name, "version": serverVersion},
 		}, nil
 
 	case "ping":
@@ -143,7 +149,7 @@ func (s *Server) dispatch(ctx context.Context, req request) (any, *rpcError) {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return nil, &rpcError{codeInvalidParams, "invalid params"}
 		}
-		idx := slices.IndexFunc(s.tools, func(t tool) bool { return t.Name == params.Name })
+		idx := slices.IndexFunc(s.tools, func(t Tool) bool { return t.Name == params.Name })
 		if idx < 0 {
 			return nil, &rpcError{codeInvalidParams, "unknown tool: " + params.Name}
 		}
@@ -156,11 +162,14 @@ func (s *Server) dispatch(ctx context.Context, req request) (any, *rpcError) {
 
 // call runs a tool. Failures are reported inside the result, as MCP
 // requires, so the model can read them and try again.
-func (s *Server) call(ctx context.Context, t tool, args json.RawMessage) callResult {
-	out, err := t.call(ctx, args)
+func (s *Server) call(ctx context.Context, t Tool, args json.RawMessage) callResult {
+	out, err := t.Call(ctx, args)
 	if err != nil {
 		s.log.Debug("tool failed", "tool", t.Name, "err", err)
 		return callResult{Content: []content{{Type: "text", Text: err.Error()}}, IsError: true}
+	}
+	if text, ok := out.(string); ok {
+		return callResult{Content: []content{{Type: "text", Text: text}}}
 	}
 	text, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

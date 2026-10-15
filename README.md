@@ -15,6 +15,18 @@ bin/codeplat-web                 # web UI, http://127.0.0.1:8090 in dev
 make test
 ```
 
+## Start everything
+
+```sh
+./start                 # build, then run every server; Ctrl+C stops them all
+./stop                  # or stop them from another terminal
+./start --list          # the services and their ports
+./start --runner        # also the worker runner, which launches Claude workers
+./start --only router,chat      # or --skip chess,decide; --no-build skips the build
+```
+
+`./start` runs the tracker's REST API and web UI and every sample's server, each in its own process group, with its output prefixed by its name. The LLM router uses `samples/llmrouter/examples/bonsai-wsl.json`, so it starts Ollama and Bonsai's `llama-server` when they are not answering. A service whose port already answers is left alone, and the sandbox is skipped when Docker is not reachable. `make start` and `make stop` do the same.
+
 ## Agent workflow
 
 An issue moves through three stages, each worked by its own agent loop: `refinement`, `implementation`, `testing`. Within a stage it is `todo`, `in_progress` or `done`.

@@ -12,6 +12,10 @@ Each issue you write is worked by a small model: Claude Haiku, or a small local 
 
 None of these workers has seen this conversation, the roadmap, or any other issue. A worker knows what the issue says and what it reads from the repository, and nothing else. It does careful work on a well-bounded change. It will not reliably infer intent, find its own way around a large codebase, or notice that a neighbouring issue is changing the same file.
 
+## Looking at the code
+
+Before you cut the work, map the code with the `code_map` tool (or `bin/codeplat-nav map DIR`): it lists every package, its files and its exported API with `file:line`, so you can choose the files for each issue's "Read first" without reading them all. When an issue changes something that already exists, run `symbol_refs` on it (or `bin/codeplat-nav refs NAME`): every file it lists is edited by that issue, which tells you which files the issue owns and which issues would collide. The workers have the same tools, so a "Read first" entry can name a symbol for them to look up instead of a whole file to read.
+
 ## The structure
 
 A **roadmap** is an ordered list of epics that together deliver the goal. An **epic** is a set of issues. An **issue** is one change, small enough for one worker in one run.

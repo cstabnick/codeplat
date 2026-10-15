@@ -2,6 +2,12 @@
   "mcpServers": {
     "codeplat": {
       "command": "bin/codeplat-mcp"
+    },
+    "codenav": {
+      "command": "bin/codeplat-nav",
+      "args": [
+        "mcp"
+      ]
     }
   }
 }

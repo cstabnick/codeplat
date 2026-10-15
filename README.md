@@ -27,6 +27,8 @@ bin/codeplat issue update PLAT-1 -stage testing -status todo -assignee ""   # ha
 
 [prompts/decompose.md](prompts/decompose.md) is the prompt for the planning model: it turns a goal into a roadmap of epics whose issues can be worked in parallel by small models.
 
+[prompts/bonsai/](prompts/bonsai/) holds the refine, implement and test prompts for a Bonsai model working one issue over MCP. They are tighter than the runner's prompts to keep the model from over-reasoning. Replace `ISSUE_ID` with the issue's ID before use, or give it `next.md`, which takes the first ready issue (testing, then implementation, then refinement) and follows the matching stage prompt.
+
 ## Environments
 
 `CODEPLAT_ENV` picks the config: `dev` (default), `test`, or `prod`. The files live in `config/` and are compiled into the binaries. `CODEPLAT_CONFIG=/path/to/file.json` uses an external file instead.

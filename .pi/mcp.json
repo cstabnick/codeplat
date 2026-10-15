@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "codeplat": {
+      "command": "bin/codeplat-mcp",
+      "cwd": ".",
+      "description": "Manage projects and issues in the codeplat tracker (create, list, update, claim, comment, hand off)"
+    }
+  }
+}

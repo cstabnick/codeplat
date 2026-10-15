@@ -13,7 +13,7 @@
       "kind": "openai",
       "url": "http://192.168.176.1:8080",
       "command": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                  "$env:BONSAI_HOST='0.0.0.0'; & 'C:\\Users\\cstab\\Bonsai-demo\\scripts\\start_llama_server.ps1'"],
+                  "$env:BONSAI_HOST='0.0.0.0'; $env:BONSAI_CTX='262144'; & 'C:\\Users\\cstab\\Bonsai-demo\\scripts\\start_llama_server.ps1'"],
       "stop_command": ["powershell.exe", "-NoProfile", "-Command",
                        "Stop-Process -Name llama-server -ErrorAction SilentlyContinue"],
       "start_timeout_seconds": 600

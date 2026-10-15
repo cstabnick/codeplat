@@ -27,12 +27,83 @@ const (
 	marker   = "\n[... output truncated ...]\n"
 )
 
-// Bash returns the bash tool.
-func Bash() chat.Tool {
-	return bashTool{}
+// Runner runs one command for the bash tool. exitCode is -1 when the process was killed by a signal.
+type Runner interface {
+	Run(ctx context.Context, workspace, command string, timeout time.Duration) (output string, exitCode int, timedOut bool, err error)
 }
 
-type bashTool struct{}
+// Local runs commands with bash on this machine, in the workspace (today's behaviour:
+// sandbox.Resolve, process group, kill on timeout, head/tail capture).
+type Local struct{}
+
+var _ Runner = Local{}
+
+// Run implements Runner for the local machine.
+func (Local) Run(ctx context.Context, workspace, command string, timeout time.Duration) (string, int, bool, error) {
+	dir, err := sandbox.Resolve(workspace, "")
+	if err != nil {
+		return "", 0, false, err
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	out := &capture{}
+	cmd := exec.Command("bash", "-c", command)
+	cmd.Dir = dir
+	cmd.Stdin = nil
+	cmd.Stdout = out
+	cmd.Stderr = out
+	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return "", 0, false, fmt.Errorf("start bash: %w", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	var waitErr error
+	timedOut := false
+	select {
+	case waitErr = <-done:
+	case <-runCtx.Done():
+		// Kill the whole process group so that background children
+		// do not outlive the command or keep its output open.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		waitErr = <-done
+		timedOut = true
+	}
+
+	if timedOut && ctx.Err() != nil {
+		return "", 0, false, fmt.Errorf("command cancelled: %w", ctx.Err())
+	}
+	if timedOut {
+		return out.String(), -1, true, nil
+	}
+	if waitErr == nil {
+		return out.String(), 0, false, nil
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		return "", 0, false, fmt.Errorf("run bash: %w", waitErr)
+	}
+	return out.String(), exitErr.ExitCode(), false, nil
+}
+
+// Bash returns the bash tool, running commands on this machine.
+func Bash() chat.Tool {
+	return BashWith(Local{})
+}
+
+// BashWith returns the bash tool, running each command through r.
+func BashWith(r Runner) chat.Tool {
+	return bashTool{runner: r}
+}
+
+type bashTool struct {
+	runner Runner
+}
 
 type bashArgs struct {
 	Command        string `json:"command"`
@@ -55,7 +126,7 @@ func (bashTool) NeedsApproval(json.RawMessage) bool {
 	return true
 }
 
-func (bashTool) Run(ctx context.Context, workspace string, args json.RawMessage) (string, error) {
+func (t bashTool) Run(ctx context.Context, workspace string, args json.RawMessage) (string, error) {
 	var a bashArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("%w: arguments: %v", chat.ErrInvalid, err)
@@ -70,65 +141,23 @@ func (bashTool) Run(ctx context.Context, workspace string, args json.RawMessage)
 			timeout = maxTimeout
 		}
 	}
-	dir, err := sandbox.Resolve(workspace, "")
+
+	output, exitCode, timedOut, err := t.runner.Run(ctx, workspace, a.Command, timeout)
 	if err != nil {
 		return "", err
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	out := &capture{}
-	cmd := exec.Command("bash", "-c", a.Command)
-	cmd.Dir = dir
-	cmd.Stdin = nil
-	cmd.Stdout = out
-	cmd.Stderr = out
-	cmd.Env = os.Environ()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("start bash: %w", err)
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	var waitErr error
-	timedOut := false
-	select {
-	case waitErr = <-done:
-	case <-runCtx.Done():
-		// Kill the whole process group so that background children
-		// do not outlive the command or keep its output open.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		waitErr = <-done
-		timedOut = true
-	}
-
-	if timedOut && ctx.Err() != nil {
-		return "", fmt.Errorf("command cancelled: %w", ctx.Err())
-	}
-
-	text := out.String()
+	text := output
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
 	switch {
 	case timedOut:
 		text += fmt.Sprintf("timed out after %ds", int(timeout/time.Second))
-	case waitErr == nil:
-		text += "exit status 0"
+	case exitCode == -1:
+		text += "terminated by signal"
 	default:
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			if code := exitErr.ExitCode(); code >= 0 {
-				text += fmt.Sprintf("exit status %d", code)
-			} else {
-				text += "terminated by signal"
-			}
-		} else {
-			return "", fmt.Errorf("run bash: %w", waitErr)
-		}
+		text += fmt.Sprintf("exit status %d", exitCode)
 	}
 	return text, nil
 }

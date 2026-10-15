@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -278,6 +279,74 @@ func TestConversationWithoutWorkspaceOffersNoTools(t *testing.T) {
 	}
 	if _, ok := reqs[0]["tools"]; ok {
 		t.Errorf("request has tools key, want none: %v", reqs[0]["tools"])
+	}
+}
+
+func TestUnknownExecFails(t *testing.T) {
+	_, err := app.New(config.Config{
+		Addr:      "127.0.0.1:0",
+		DBPath:    filepath.Join(t.TempDir(), "chat.db"),
+		RouterURL: "http://127.0.0.1:1",
+		Exec:      "docker",
+	})
+	if err == nil {
+		t.Fatal("app.New with Exec docker: no error, want one")
+	}
+}
+
+// newConfiguredApp serves the app built from cfg against a fresh fake router.
+func newConfiguredApp(t *testing.T, cfg config.Config) *httptest.Server {
+	t.Helper()
+	fake, _ := fakeRouter(t)
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RouterURL = fake.URL
+	if cfg.DBPath == "" {
+		cfg.DBPath = filepath.Join(t.TempDir(), "chat.db")
+	}
+	a := apptest.NewWith(t, cfg)
+	srv := httptest.NewServer(a.Handler)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestProjectsDirGivesEachConversationADirectory(t *testing.T) {
+	projects := t.TempDir()
+	srv := newConfiguredApp(t, config.Config{ProjectsDir: projects})
+
+	conv := createConversation(t, srv, `{}`)
+	want := filepath.Join(projects, conv.ID)
+	if conv.Workspace != want {
+		t.Fatalf("workspace = %q, want %q", conv.Workspace, want)
+	}
+	info, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat project directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", want)
+	}
+
+	other := createConversation(t, srv, `{}`)
+	if other.Workspace == conv.Workspace || other.Workspace != filepath.Join(projects, other.ID) {
+		t.Errorf("second workspace = %q, want its own directory under %s", other.Workspace, projects)
+	}
+}
+
+func TestConfiguredWorkspaceWinsOverProjectsDir(t *testing.T) {
+	workspace := t.TempDir()
+	projects := t.TempDir()
+	srv := newConfiguredApp(t, config.Config{Workspace: workspace, ProjectsDir: projects})
+
+	conv := createConversation(t, srv, `{}`)
+	if conv.Workspace != workspace {
+		t.Errorf("workspace = %q, want %q", conv.Workspace, workspace)
+	}
+	entries, err := os.ReadDir(projects)
+	if err != nil {
+		t.Fatalf("read projects directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("projects directory has %d entries, want none", len(entries))
 	}
 }
 

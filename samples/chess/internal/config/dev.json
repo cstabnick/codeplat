@@ -1,0 +1,1 @@
+{"addr": "127.0.0.1:8086", "seed": 0, "store": {"kind": "sqlite", "path": "chess.db"}, "opponent": {"kind": "router", "url": "http://127.0.0.1:8083", "model": "reason"}, "decider": {"kind": "http", "url": "http://127.0.0.1:8085"}}

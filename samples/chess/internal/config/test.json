@@ -1,0 +1,1 @@
+{"addr": "127.0.0.1:0", "seed": 1, "store": {"kind": "memory"}, "opponent": {"kind": "random", "seed": 1}, "decider": {"kind": "fixed"}}

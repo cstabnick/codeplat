@@ -1,0 +1,31 @@
+{
+  "nodes": [
+    {"id": "in", "type": "inputNode", "name": "Request"},
+    {"id": "policy", "type": "decisionTableNode", "name": "Policy", "content": {
+      "hitPolicy": "first",
+      "inputs": [
+        {"id": "d", "name": "Difficulty", "field": "difficulty"},
+        {"id": "p", "name": "Phase", "field": "phase"},
+        {"id": "c", "name": "In check", "field": "in_check"}
+      ],
+      "outputs": [
+        {"id": "route", "name": "Route", "field": "route"},
+        {"id": "temp", "name": "Temperature", "field": "temperature"},
+        {"id": "persona", "name": "Persona", "field": "persona"},
+        {"id": "n", "name": "Candidates", "field": "candidates"}
+      ],
+      "rules": [
+        {"_id": "r1", "d": "\"easy\"", "p": "", "c": "", "route": "\"quick\"", "temp": "1.0", "persona": "\"You are a casual beginner. Answer fast.\"", "n": "1"},
+        {"_id": "r2", "d": "", "p": "", "c": "true", "route": "\"general\"", "temp": "0.2", "persona": "\"You are in check. Find a move that gets your king out of check.\"", "n": "3"},
+        {"_id": "r3", "d": "\"hard\"", "p": "", "c": "", "route": "\"reason\"", "temp": "0.2", "persona": "\"You are a strong club player. Look for checks, captures and threats first.\"", "n": "3"},
+        {"_id": "r4", "d": "", "p": "\"opening\"", "c": "", "route": "\"quick\"", "temp": "0.5", "persona": "\"You play sound openings: develop pieces, control the centre, castle early.\"", "n": "3"},
+        {"_id": "r5", "d": "", "p": "", "c": "", "route": "\"general\"", "temp": "0.5", "persona": "\"You are a careful chess player.\"", "n": "3"}
+      ]
+    }},
+    {"id": "out", "type": "outputNode", "name": "Response"}
+  ],
+  "edges": [
+    {"id": "e1", "sourceId": "in", "targetId": "policy"},
+    {"id": "e2", "sourceId": "policy", "targetId": "out"}
+  ]
+}

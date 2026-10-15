@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    {"id": "in", "type": "inputNode", "name": "Request"},
+    {"id": "rate", "type": "decisionTableNode", "name": "Rate", "content": {
+      "hitPolicy": "first",
+      "inputs": [
+        {"id": "country", "name": "Country", "field": "country"},
+        {"id": "weight", "name": "Weight", "field": "weight"}
+      ],
+      "outputs": [{"id": "cost", "name": "Cost", "field": "cost"}],
+      "rules": [
+        {"_id": "r1", "country": "\"US\"", "weight": "<= 5", "cost": "5"},
+        {"_id": "r2", "country": "\"US\"", "weight": "", "cost": "12"},
+        {"_id": "r3", "country": "", "weight": "<= 5", "cost": "15"},
+        {"_id": "r4", "country": "", "weight": "", "cost": "30"}
+      ]
+    }},
+    {"id": "out", "type": "outputNode", "name": "Response"}
+  ],
+  "edges": [
+    {"id": "e1", "sourceId": "in", "targetId": "rate"},
+    {"id": "e2", "sourceId": "rate", "targetId": "out"}
+  ]
+}

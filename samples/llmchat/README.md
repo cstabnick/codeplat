@@ -26,6 +26,9 @@ llmchat reads these environment variables:
 | `CHAT_ADDR` | `127.0.0.1:8084` | Listen address. |
 | `CHAT_DB` | `$XDG_DATA_HOME/llmchat/llmchat.db`, else `~/.local/share/llmchat/llmchat.db` | SQLite database file. |
 | `CHAT_ROUTER_URL` | `http://127.0.0.1:8083` | Base URL of the LLM router. |
+| `CHAT_EXEC` | `local` | Where `bash` runs: `local` on the host, or `sandbox` in a container through the sandbox server. Any other value is an error. |
+| `CHAT_SANDBOX_URL` | `http://127.0.0.1:8087` | Base URL of the sandbox server, used when `CHAT_EXEC=sandbox`. |
+| `CHAT_PROJECTS_DIR` | Empty, or with `CHAT_EXEC=sandbox`: `$XDG_DATA_HOME/sandbox/workspaces`, else `~/.local/share/sandbox/workspaces` | Directory that gives each new conversation without a workspace its own folder, `<projects dir>/<id>`. Empty means none. |
 
 An empty variable counts as unset. The database file's directory is created
 at startup if it does not exist.
@@ -89,6 +92,30 @@ page shows the call with Approve and Deny buttons. The answer goes to
 `{"approve": false}`. A denied call is not run, and the model is told so. If
 the page disconnects while a call is waiting, the turn is cancelled.
 
+## Sandbox mode
+
+By default `bash` runs on the host (`CHAT_EXEC=local`). With `CHAT_EXEC=sandbox`,
+`bash` runs in a container instead, through the sandbox server in `../sandbox`.
+Docker must be reachable from WSL for the sandbox server to start boxes.
+
+1. Start the sandbox server. From `../sandbox`:
+
+        make run
+
+   It listens on http://127.0.0.1:8087.
+
+2. Then, from this directory:
+
+        CHAT_EXEC=sandbox make run
+
+Each new conversation gets its own folder, `<projects dir>/<id>`, where the
+projects dir is `CHAT_PROJECTS_DIR`. Its `bash` calls run in the box named after
+that directory, so files the commands write stay with the conversation.
+
+The file tools (`read_file`, `list_dir`, `grep`, `write_file`, `edit_file`) still
+run on the host, on the same files that the box mounts. Approval still applies to
+every `bash` call, as described above.
+
 ## API
 
 All paths are under the server address. Errors are `{"error": "..."}`.
@@ -130,3 +157,8 @@ A second message sent while a turn is running in the same conversation gets
 
 `make live` runs the tests in `internal/live` with `LLMCHAT_LIVE=1`. They
 call a real router, so start the router first. Without that variable they skip.
+
+`LLMCHAT_SANDBOX_LIVE=1 go test ./internal/live/ -run Sandbox` runs a command in
+a real sandbox server at `CHAT_SANDBOX_URL`, and checks that the file it writes
+appears on the host. It skips unless that variable is set and the server
+answers `/healthz`.

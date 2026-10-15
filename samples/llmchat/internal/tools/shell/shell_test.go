@@ -252,3 +252,88 @@ func TestWorkspaceFileVisible(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "data\nexit status 0")
 	}
 }
+
+// fakeRunner records what the bash tool passes to it and returns canned results.
+type fakeRunner struct {
+	gotWorkspace string
+	gotCommand   string
+	gotTimeout   time.Duration
+
+	output   string
+	exitCode int
+	timedOut bool
+	err      error
+}
+
+func (f *fakeRunner) Run(ctx context.Context, workspace, command string, timeout time.Duration) (string, int, bool, error) {
+	f.gotWorkspace, f.gotCommand, f.gotTimeout = workspace, command, timeout
+	return f.output, f.exitCode, f.timedOut, f.err
+}
+
+func TestBashWithPassesArgsToRunner(t *testing.T) {
+	cases := []struct {
+		name        string
+		timeout     int
+		wantTimeout time.Duration
+	}{
+		{"default timeout", 0, 60 * time.Second},
+		{"given timeout", 7, 7 * time.Second},
+		{"timeout capped", 999, 300 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &fakeRunner{}
+			if _, err := BashWith(r).Run(context.Background(), "/work", args(t, "make it", c.timeout)); err != nil {
+				t.Fatal(err)
+			}
+			if r.gotWorkspace != "/work" {
+				t.Errorf("workspace = %q, want /work", r.gotWorkspace)
+			}
+			if r.gotCommand != "make it" {
+				t.Errorf("command = %q, want %q", r.gotCommand, "make it")
+			}
+			if r.gotTimeout != c.wantTimeout {
+				t.Errorf("timeout = %v, want %v", r.gotTimeout, c.wantTimeout)
+			}
+		})
+	}
+}
+
+func TestBashWithFormatsRunnerResult(t *testing.T) {
+	cases := []struct {
+		name     string
+		output   string
+		exitCode int
+		timedOut bool
+		want     string
+	}{
+		{"exit 0", "hi\n", 0, false, "hi\nexit status 0"},
+		{"exit 2 without trailing newline", "bad", 2, false, "bad\nexit status 2"},
+		{"terminated by signal", "", -1, false, "terminated by signal"},
+		{"timed out", "partial\n", -1, true, "partial\ntimed out after 7s"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &fakeRunner{output: c.output, exitCode: c.exitCode, timedOut: c.timedOut}
+			got, err := BashWith(r).Run(context.Background(), "/work", args(t, "make it", 7))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestBashWithReturnsRunnerError(t *testing.T) {
+	sentinel := errors.New("boom")
+	r := &fakeRunner{err: sentinel}
+	got, err := BashWith(r).Run(context.Background(), "/work", args(t, "echo hi", 0))
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the runner's error", err)
+	}
+	if got != "" {
+		t.Errorf("got %q with a runner error, want empty", got)
+	}
+}

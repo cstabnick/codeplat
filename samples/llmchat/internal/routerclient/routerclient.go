@@ -7,10 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,14 +100,22 @@ func (c *Client) Complete(ctx context.Context, req chat.CompletionRequest, emit 
 
 	s := streamState{rec: rec}
 	streamErr := s.read(ctx, resp.Body, emit)
+	calls := s.toolCalls()
+	var textErr error
+	if streamErr == nil && calls == nil {
+		calls, textErr = textToolCalls(s.content.String(), req.Tools)
+	}
 	msg = chat.Message{
 		Role:      chat.RoleAssistant,
 		Content:   s.content.String(),
 		Reasoning: s.reasoning.String(),
-		ToolCalls: s.toolCalls(),
+		ToolCalls: calls,
 		Route:     route,
 		Backend:   backend,
 		Model:     model,
+	}
+	if textErr != nil {
+		emit(chat.Event{Type: chat.EventError, Error: textCallError})
 	}
 	return msg, streamErr
 }
@@ -405,4 +416,190 @@ func (s *streamState) toolCalls() []chat.ToolCall {
 		out = append(out, *s.calls[i])
 	}
 	return out
+}
+
+// textCallError is the error event for a reply whose text holds a tool call
+// that could not be read. The text stays in the reply and no tool runs.
+const textCallError = "could not read a tool call in the reply; no tool was run"
+
+const (
+	textCallOpen   = "<tool_call>"
+	textCallClose  = "</tool_call>"
+	textFuncOpen   = "<function="
+	textFuncClose  = "</function>"
+	textParamOpen  = "<parameter="
+	textParamClose = "</parameter>"
+)
+
+// textToolCalls reads the tool calls the model wrote as reply text, in the
+// Qwen form <tool_call><function=NAME><parameter=KEY>VALUE</parameter>...
+// </function></tool_call>. Only a call whose name is in tools converts; a
+// well-formed call for another name is skipped. A malformed call returns an
+// error and no calls at all. Calls are numbered text-1, text-2, ... in the
+// order they converted.
+func textToolCalls(content string, tools []chat.ToolSpec) ([]chat.ToolCall, error) {
+	var calls []chat.ToolCall
+	rest := content
+	for {
+		i := strings.Index(rest, textCallOpen)
+		if i < 0 {
+			return calls, nil
+		}
+		parsed, after, ok := parseTextCall(rest[i+len(textCallOpen):])
+		if !ok {
+			return nil, errMalformedTextCall
+		}
+		rest = after
+		spec, known := findTool(tools, parsed.name)
+		if !known {
+			continue
+		}
+		args, ok := textArguments(spec, parsed.params)
+		if !ok {
+			return nil, errMalformedTextCall
+		}
+		b, err := json.Marshal(args)
+		if err != nil {
+			return nil, errMalformedTextCall
+		}
+		calls = append(calls, chat.ToolCall{
+			ID:        fmt.Sprintf("text-%d", len(calls)+1),
+			Name:      parsed.name,
+			Arguments: string(b),
+		})
+	}
+}
+
+var errMalformedTextCall = errors.New("malformed text tool call")
+
+// textCall is a well-formed call read from reply text, before its name is checked.
+type textCall struct {
+	name   string
+	params []textParam
+}
+
+// textParam is one parameter of a text call. value has its one surrounding
+// newline removed.
+type textParam struct {
+	key   string
+	value string
+}
+
+// parseTextCall reads one call from s, which starts just after "<tool_call>".
+// It returns the call and the text after "</tool_call>". Only whitespace may
+// sit between the tags; any other structure is malformed.
+func parseTextCall(s string) (textCall, string, bool) {
+	var c textCall
+	s = strings.TrimLeft(s, " \t\r\n")
+	if !strings.HasPrefix(s, textFuncOpen) {
+		return c, "", false
+	}
+	s = s[len(textFuncOpen):]
+	end := strings.IndexByte(s, '>')
+	if end < 0 || !isIdent(s[:end]) {
+		return c, "", false
+	}
+	c.name = s[:end]
+	s = s[end+1:]
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		if strings.HasPrefix(s, textFuncClose) {
+			s = s[len(textFuncClose):]
+			break
+		}
+		if !strings.HasPrefix(s, textParamOpen) {
+			return c, "", false
+		}
+		s = s[len(textParamOpen):]
+		end := strings.IndexByte(s, '>')
+		if end < 0 || !isIdent(s[:end]) {
+			return c, "", false
+		}
+		key := s[:end]
+		s = s[end+1:]
+		j := strings.Index(s, textParamClose)
+		if j < 0 {
+			return c, "", false
+		}
+		value := strings.TrimSuffix(strings.TrimPrefix(s[:j], "\n"), "\n")
+		c.params = append(c.params, textParam{key: key, value: value})
+		s = s[j+len(textParamClose):]
+	}
+	s = strings.TrimLeft(s, " \t\r\n")
+	if !strings.HasPrefix(s, textCallClose) {
+		return c, "", false
+	}
+	return c, s[len(textCallClose):], true
+}
+
+// isIdent reports whether s is a non-empty run of ASCII letters, digits and underscores.
+func isIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// findTool returns the spec named name.
+func findTool(tools []chat.ToolSpec, name string) (chat.ToolSpec, bool) {
+	for _, t := range tools {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return chat.ToolSpec{}, false
+}
+
+// textArguments builds the JSON arguments of a text call. A parameter's value
+// is typed by the schema property of the same name: boolean, integer and
+// number values must parse as that type. A property without a type, or a key
+// the schema does not name, takes the value as a string. A repeated key is
+// malformed.
+func textArguments(spec chat.ToolSpec, params []textParam) (map[string]any, bool) {
+	var schema struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+	}
+	// An unreadable schema leaves every property untyped, so values are strings.
+	_ = json.Unmarshal(spec.Parameters, &schema)
+	args := make(map[string]any, len(params))
+	for _, p := range params {
+		if _, dup := args[p.key]; dup {
+			return nil, false
+		}
+		v, ok := typedValue(schema.Properties[p.key].Type, p.value)
+		if !ok {
+			return nil, false
+		}
+		args[p.key] = v
+	}
+	return args, true
+}
+
+// typedValue parses value as the JSON type typ. An unknown type keeps the string.
+func typedValue(typ, value string) (any, bool) {
+	switch typ {
+	case "boolean":
+		b, err := strconv.ParseBool(value)
+		return b, err == nil
+	case "integer":
+		n, err := strconv.ParseInt(value, 10, 64)
+		return n, err == nil
+	case "number":
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, false
+		}
+		return f, true
+	default:
+		return value, true
+	}
 }

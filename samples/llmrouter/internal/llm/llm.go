@@ -4,6 +4,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -34,11 +35,17 @@ type Message struct {
 
 // Route sends prompts of one intent to one model on one backend. The
 // intent model sees Name and Description when it classifies a prompt.
+//
+// Options, when set, is a JSON object of top-level request fields that the
+// gateway sets on every chat-completions request sent to this route. Each
+// field replaces the client's field with the same name. Absent or null
+// means no options. The config loader validates it; "model" is not allowed.
 type Route struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Backend     string `json:"backend"`
-	Model       string `json:"model"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Backend     string          `json:"backend"`
+	Model       string          `json:"model"`
+	Options     json.RawMessage `json:"options,omitempty"`
 }
 
 // Decision records how one conversation was routed. Fallback is true when

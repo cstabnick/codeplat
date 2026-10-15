@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -192,6 +193,9 @@ func (c Config) Validate() error {
 		if r.Model == "" {
 			return invalid("%s.model: must not be empty", field)
 		}
+		if err := checkOptions(field+".options", r.Options); err != nil {
+			return err
+		}
 	}
 	if !routes[c.DefaultRoute] {
 		return invalid("default_route: unknown route %q", c.DefaultRoute)
@@ -220,6 +224,23 @@ func (c Config) ModelsFor(backend string) []string {
 		}
 	}
 	return out
+}
+
+// checkOptions validates a route's options: absent or null is allowed, and
+// anything else must be a JSON object without a "model" key.
+func checkOptions(field string, raw json.RawMessage) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	var opts map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &opts); err != nil || opts == nil {
+		return invalid("%s: must be a JSON object", field)
+	}
+	if _, ok := opts["model"]; ok {
+		return invalid("%s.model: not allowed, the gateway sets the model", field)
+	}
+	return nil
 }
 
 // invalid returns an error wrapping llm.ErrInvalid with the formatted message.

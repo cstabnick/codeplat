@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    {"id": "in", "type": "inputNode", "name": "Request"},
+    {"id": "recover", "type": "decisionTableNode", "name": "Recover", "content": {
+      "hitPolicy": "first",
+      "inputs": [
+        {"id": "reason", "name": "Reason", "field": "reason"},
+        {"id": "attempt", "name": "Attempt", "field": "attempt"},
+        {"id": "d", "name": "Difficulty", "field": "difficulty"}
+      ],
+      "outputs": [{"id": "action", "name": "Action", "field": "action"}],
+      "rules": [
+        {"_id": "r1", "reason": "\"no_move\"", "attempt": ">= 2", "d": "", "action": "\"random\""},
+        {"_id": "r2", "reason": "", "attempt": "< 3", "d": "", "action": "\"retry\""},
+        {"_id": "r3", "reason": "", "attempt": "", "d": "\"easy\"", "action": "\"resign\""},
+        {"_id": "r4", "reason": "", "attempt": "", "d": "", "action": "\"random\""}
+      ]
+    }},
+    {"id": "out", "type": "outputNode", "name": "Response"}
+  ],
+  "edges": [
+    {"id": "e1", "sourceId": "in", "targetId": "recover"},
+    {"id": "e2", "sourceId": "recover", "targetId": "out"}
+  ]
+}

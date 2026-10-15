@@ -16,6 +16,7 @@ import (
 	"llmchat/internal/chat"
 	"llmchat/internal/config"
 	"llmchat/internal/routerclient"
+	"llmchat/internal/sandboxclient"
 	"llmchat/internal/sqlitestore"
 	"llmchat/internal/tools/edit"
 	"llmchat/internal/tools/fs"
@@ -27,6 +28,9 @@ import (
 // SystemPrompt is sent first in every request. The engine adds the workspace
 // directory after it when the conversation has one.
 const SystemPrompt = "You are a coding assistant. You can read, search and edit files and run shell commands in the workspace directory using the provided tools. Look at files before changing them, make small focused edits, and explain briefly what you did. Tool calls that change files or run commands are shown to the person for approval first."
+
+// sandboxNote is appended to SystemPrompt when bash runs in the sandbox.
+const sandboxNote = " Shell commands run in a Linux container where the workspace is mounted at the same path. Install what you need there."
 
 // App is a built server. Handler serves the API and the page.
 type App struct {
@@ -41,6 +45,14 @@ type App struct {
 // it opens that file for appending (created with mode 0o644) as the raw
 // stream log. It starts nothing.
 func New(cfg config.Config) (*App, error) {
+	runner, err := bashRunner(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("app: %w", err)
+	}
+	system := SystemPrompt
+	if cfg.Exec == "sandbox" {
+		system += sandboxNote
+	}
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		return nil, fmt.Errorf("app: create database directory: %w", err)
 	}
@@ -65,15 +77,15 @@ func New(cfg config.Config) (*App, error) {
 	approvals := api.NewApprovals()
 	tools := []chat.Tool{
 		fs.ReadFile(), fs.ListDir(), search.Grep(),
-		edit.WriteFile(), edit.EditFile(), shell.Bash(),
+		edit.WriteFile(), edit.EditFile(), shell.BashWith(runner),
 	}
 	engine := agent.New(store, routerClient, tools, approvals, agent.Options{
-		System:   SystemPrompt,
+		System:   system,
 		MaxSteps: cfg.MaxSteps,
 	})
 
 	logger := log.New(os.Stderr, "llmchat: ", log.LstdFlags)
-	apiStore := defaultWorkspaceStore{Store: store, workspace: cfg.Workspace}
+	apiStore := defaultWorkspaceStore{Store: store, workspace: cfg.Workspace, projectsDir: cfg.ProjectsDir}
 	apiHandler := api.NewHandler(apiStore, engine, approvals, routerClient.Routes, logger)
 	webHandler := web.NewHandler()
 
@@ -85,18 +97,45 @@ func New(cfg config.Config) (*App, error) {
 	return &App{Handler: mux, store: store, debugFile: debugFile}, nil
 }
 
+// bashRunner chooses where bash commands run. Only this package reads
+// cfg.Exec to pick an implementation.
+func bashRunner(cfg config.Config) (shell.Runner, error) {
+	switch cfg.Exec {
+	case "", "local":
+		return shell.Local{}, nil
+	case "sandbox":
+		return sandboxclient.New(cfg.SandboxURL, nil), nil
+	}
+	return nil, fmt.Errorf("unknown exec %q: want \"local\" or \"sandbox\"", cfg.Exec)
+}
+
 // defaultWorkspaceStore gives new conversations without a workspace the
-// configured default. The engine uses the unwrapped store.
+// configured default. When there is none and projectsDir is set, each new
+// conversation gets its own directory, projectsDir/<id>. The engine uses the
+// unwrapped store.
 type defaultWorkspaceStore struct {
 	chat.Store
-	workspace string
+	workspace   string
+	projectsDir string
 }
 
 func (s defaultWorkspaceStore) CreateConversation(ctx context.Context, c chat.Conversation) (chat.Conversation, error) {
 	if c.Workspace == "" {
 		c.Workspace = s.workspace
 	}
-	return s.Store.CreateConversation(ctx, c)
+	if c.Workspace != "" || s.projectsDir == "" {
+		return s.Store.CreateConversation(ctx, c)
+	}
+	conv, err := s.Store.CreateConversation(ctx, c)
+	if err != nil {
+		return chat.Conversation{}, err
+	}
+	dir := filepath.Join(s.projectsDir, conv.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		s.Store.DeleteConversation(ctx, conv.ID)
+		return chat.Conversation{}, fmt.Errorf("app: create project directory: %w", err)
+	}
+	return s.Store.UpdateConversation(ctx, conv.ID, chat.ConversationPatch{Workspace: &dir})
 }
 
 // Close closes the store and the debug stream log, if any.

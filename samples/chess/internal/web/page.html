@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess</title>
+<style>
+  :root {
+    --bg: #f4f4f1;
+    --panel: #ffffff;
+    --text: #1c1c1a;
+    --muted: #6b6b66;
+    --border: #d6d6d0;
+    --accent: #2f6fd6;
+    --light-sq: #f0d9b5;
+    --dark-sq: #b58863;
+    --select: #2f6fd6;
+    --last: rgba(255, 220, 90, 0.55);
+    --error-bg: #fbe3e1;
+    --error-text: #8a1c14;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a19;
+      --panel: #242423;
+      --text: #ecebe6;
+      --muted: #9d9d96;
+      --border: #3a3a38;
+      --accent: #6aa3ff;
+      --light-sq: #8c8c84;
+      --dark-sq: #55554f;
+      --select: #6aa3ff;
+      --last: rgba(255, 220, 90, 0.35);
+      --error-bg: #4a1f1c;
+      --error-text: #ffb4ab;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a19;
+    --panel: #242423;
+    --text: #ecebe6;
+    --muted: #9d9d96;
+    --border: #3a3a38;
+    --accent: #6aa3ff;
+    --light-sq: #8c8c84;
+    --dark-sq: #55554f;
+    --select: #6aa3ff;
+    --last: rgba(255, 220, 90, 0.35);
+    --error-bg: #4a1f1c;
+    --error-text: #ffb4ab;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.4;
+  }
+  header { padding: 16px; }
+  h1 { margin: 0; font-size: 1.5rem; }
+  h2 { margin: 0 0 8px; font-size: 1.1rem; }
+  main.layout {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr) minmax(220px, 1fr);
+    gap: 16px;
+    padding: 0 16px 16px;
+    align-items: start;
+  }
+  @media (max-width: 860px) {
+    main.layout { grid-template-columns: minmax(0, 1fr); }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    min-width: 0;
+  }
+  form.new-game { display: grid; gap: 8px; margin-bottom: 12px; }
+  label { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
+  select, button {
+    font: inherit;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+  }
+  button { cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #games { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+  #games button { width: 100%; text-align: left; font-size: 0.9rem; }
+  #games button[aria-current="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .muted { color: var(--muted); font-size: 0.9rem; }
+  #message {
+    background: var(--error-bg);
+    color: var(--error-text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+  }
+  #message[hidden] { display: none; }
+  #game-info { margin-bottom: 8px; font-weight: 600; }
+  #thinking { color: var(--accent); margin: 8px 0 0; min-height: 1.4em; }
+  #thinking[hidden] { display: none; }
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    width: min(100%, 480px);
+    aspect-ratio: 1 / 1;
+    border: 2px solid var(--border);
+  }
+  .sq {
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: clamp(1.4rem, 5.5vw, 2.4rem);
+    line-height: 1;
+    position: relative;
+  }
+  .sq.light { background: var(--light-sq); }
+  .sq.dark { background: var(--dark-sq); }
+  .sq.last { background-image: linear-gradient(var(--last), var(--last)); }
+  .sq.selected { box-shadow: inset 0 0 0 4px var(--select); }
+  .sq.target::after {
+    content: "";
+    width: 28%;
+    height: 28%;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.25);
+    position: absolute;
+  }
+  .board.inactive .sq { cursor: default; }
+  .controls { margin-top: 10px; display: flex; gap: 8px; }
+  #moves { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+  #moves li { font-size: 0.95rem; }
+  .san { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  details { margin-top: 4px; font-size: 0.85rem; color: var(--muted); }
+  details summary { cursor: pointer; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 6px 0 0; }
+  dt { font-weight: 600; }
+  dd { margin: 0; word-break: break-word; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chess</h1>
+</header>
+<main class="layout">
+  <section class="panel" aria-labelledby="games-title">
+    <h2 id="games-title">Games</h2>
+    <form id="new-game" class="new-game">
+      <label>Play as
+        <select name="human">
+          <option value="white">White</option>
+          <option value="black">Black</option>
+        </select>
+      </label>
+      <label>Difficulty
+        <select name="difficulty">
+          <option value="easy">Easy</option>
+          <option value="normal" selected>Normal</option>
+          <option value="hard">Hard</option>
+        </select>
+      </label>
+      <button type="submit" class="primary">New game</button>
+    </form>
+    <ul id="games" aria-label="Games"></ul>
+  </section>
+
+  <section class="panel" aria-label="Board">
+    <div id="message" role="alert" hidden></div>
+    <div id="game-info">Pick a game, or start a new one.</div>
+    <div id="board" class="board" aria-label="Chess board"></div>
+    <p id="thinking" hidden>Opponent is thinking…</p>
+    <div class="controls">
+      <button type="button" id="resign" disabled>Resign</button>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="moves-title">
+    <h2 id="moves-title">Moves</h2>
+    <ul id="moves" aria-label="Move list"></ul>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

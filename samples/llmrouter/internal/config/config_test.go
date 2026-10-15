@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -281,6 +282,9 @@ func TestValidateRules(t *testing.T) {
 		{"duplicate route name", func(c *Config) { c.Routes[1].Name = c.Routes[0].Name }, "routes[1].name"},
 		{"route backend unknown", func(c *Config) { c.Routes[1].Backend = "nope" }, "routes[1].backend"},
 		{"route model empty", func(c *Config) { c.Routes[0].Model = "" }, "routes[0].model"},
+		{"route options not an object", func(c *Config) { c.Routes[0].Options = json.RawMessage(`[1]`) }, "routes[0].options"},
+		{"route options a string", func(c *Config) { c.Routes[0].Options = json.RawMessage(`"x"`) }, "routes[0].options"},
+		{"route options with model", func(c *Config) { c.Routes[1].Options = json.RawMessage(`{"model":"x"}`) }, "routes[1].options.model"},
 		{"default route unknown", func(c *Config) { c.DefaultRoute = "missing" }, "default_route"},
 	}
 	for _, tt := range tests {
@@ -307,5 +311,44 @@ func TestValidateAcceptsOpenAIBackend(t *testing.T) {
 	c.Routes = append(c.Routes, llm.Route{Name: "big", Backend: "llama-server", Model: "x"})
 	if err := c.Validate(); err != nil {
 		t.Errorf("Validate() = %v, want nil", err)
+	}
+}
+
+func TestValidateAcceptsRouteOptions(t *testing.T) {
+	for _, raw := range []string{``, `null`, `{}`, `{"chat_template_kwargs":{"enable_thinking":false}}`} {
+		c := Default()
+		c.Routes[0].Options = json.RawMessage(raw)
+		if err := c.Validate(); err != nil {
+			t.Errorf("options %q: Validate() = %v, want nil", raw, err)
+		}
+	}
+}
+
+func TestExampleBonsaiReasonRouteTurnsThinkingOff(t *testing.T) {
+	clearAddrEnv(t)
+	c, err := Load("../../examples/bonsai-wsl.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]llm.Route, len(c.Routes))
+	for _, r := range c.Routes {
+		byName[r.Name] = r
+	}
+	reason, ok := byName["reason"]
+	if !ok {
+		t.Fatal("no reason route")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(reason.Options, &got); err != nil {
+		t.Fatalf("reason options %s: %v", reason.Options, err)
+	}
+	want := map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": false}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("reason options = %v, want %v", got, want)
+	}
+	for _, name := range []string{"general", "code", "quick"} {
+		if opts := byName[name].Options; len(opts) != 0 {
+			t.Errorf("%s route has options %s, want none", name, opts)
+		}
 	}
 }

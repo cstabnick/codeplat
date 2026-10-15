@@ -91,6 +91,7 @@ Route (`llm.Route`):
 | `description` | What the route is for. The intent model reads it when it classifies a prompt. |
 | `backend` | Name of a backend. |
 | `model` | Model name on that backend. |
+| `options` | Optional JSON object of top-level chat-completions fields, such as `{"chat_template_kwargs": {"enable_thinking": false}}`. The gateway sets each one on requests sent to this route, replacing the client's field with the same name and keeping the client's other fields. Only routes chosen by name, by `auto` or by the default route get them; a `backend/model` name does not. Must be an object without `model`. |
 
 Backend (`config.Backend`, each entry of `backends`):
 

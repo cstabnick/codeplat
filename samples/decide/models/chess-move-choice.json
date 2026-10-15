@@ -1,0 +1,15 @@
+{
+  "nodes": [
+    {"id": "in", "type": "inputNode", "name": "Request"},
+    {"id": "score", "type": "expressionNode", "name": "Score", "content": {
+      "expressions": [
+        {"id": "x1", "key": "score", "value": "captured_value * 10 + (check ? 3 : 0) + (mate ? 1000 : 0) + (promotion ? 8 : 0) - (attacked ? moved_value * 10 : 0) - rank"}
+      ]
+    }},
+    {"id": "out", "type": "outputNode", "name": "Response"}
+  ],
+  "edges": [
+    {"id": "e1", "sourceId": "in", "targetId": "score"},
+    {"id": "e2", "sourceId": "score", "targetId": "out"}
+  ]
+}

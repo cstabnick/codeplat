@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -553,5 +554,100 @@ func TestListModels(t *testing.T) {
 		if got.ID != w.id || got.OwnedBy != w.owner || got.Object != "model" {
 			t.Errorf("entry %d = %+v, want id %q owned by %q", i, got, w.id, w.owner)
 		}
+	}
+}
+
+func TestRouteOptionsAreApplied(t *testing.T) {
+	thinkingOff := json.RawMessage(`{"chat_template_kwargs":{"enable_thinking":false}}`)
+	routes := []llm.Route{
+		{Name: "general", Backend: "ollama", Model: "llama3"},
+		{Name: "reason", Backend: "ollama", Model: "bonsai", Options: thinkingOff},
+	}
+	client := map[string]any{
+		"messages":    []map[string]any{{"role": "user", "content": "solve it"}},
+		"temperature": 0.2,
+		"stream":      true,
+		"chat_template_kwargs": map[string]any{
+			"enable_thinking": true,
+			"x":               1,
+		},
+	}
+	cases := []struct {
+		name     string
+		model    string
+		decision llm.Decision
+		def      string
+		wantSent bool // whether the route's options must be applied
+	}{
+		{name: "route name", model: "reason", wantSent: true},
+		{name: "auto routing", model: "auto", decision: llm.Decision{Route: "reason", Backend: "ollama", Model: "bonsai"}, wantSent: true},
+		{name: "empty model routing", model: "", decision: llm.Decision{Route: "reason", Backend: "ollama", Model: "bonsai"}, wantSent: true},
+		{name: "default route", model: "gpt-x", def: "reason", wantSent: true},
+		{name: "backend prefix gets no route options", model: "ollama/bonsai"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ollama := &fakeBackend{name: "ollama"}
+			def := tc.def
+			if def == "" {
+				def = "general"
+			}
+			router := &fakeRouter{routes: routes, def: def, decision: tc.decision}
+			srv := newServer(t, router, ollama)
+			fields := map[string]any{"model": tc.model}
+			for k, v := range client {
+				fields[k] = v
+			}
+			if resp, raw := post(t, srv, chatJSON(t, fields)); resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, body %s", resp.StatusCode, raw)
+			}
+			got := decodeBody(t, ollama.gotBody)
+			if got["temperature"] != 0.2 || got["stream"] != true {
+				t.Errorf("temperature = %v, stream = %v; want 0.2 and true", got["temperature"], got["stream"])
+			}
+			if msgs, ok := got["messages"].([]any); !ok || len(msgs) != 1 {
+				t.Errorf("messages = %v, want one message", got["messages"])
+			}
+			ctk, ok := got["chat_template_kwargs"].(map[string]any)
+			if !ok {
+				t.Fatalf("chat_template_kwargs = %v, want an object", got["chat_template_kwargs"])
+			}
+			if tc.wantSent {
+				if want := map[string]any{"enable_thinking": false}; !reflect.DeepEqual(ctk, want) {
+					t.Errorf("chat_template_kwargs = %v, want %v (client's sibling key must be replaced)", ctk, want)
+				}
+			} else {
+				want := map[string]any{"enable_thinking": true, "x": float64(1)}
+				if !reflect.DeepEqual(ctk, want) {
+					t.Errorf("chat_template_kwargs = %v, want the client's %v", ctk, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRouteWithoutOptionsForwardsLikeBefore(t *testing.T) {
+	routes := []llm.Route{{Name: "code", Backend: "ollama", Model: "qwen-coder"}}
+	ollama := &fakeBackend{name: "ollama"}
+	srv := newServer(t, &fakeRouter{routes: routes, def: "code"}, ollama)
+	body := chatJSON(t, map[string]any{
+		"model":                "code",
+		"temperature":          0.5,
+		"stream":               false,
+		"chat_template_kwargs": map[string]any{"enable_thinking": true},
+	})
+	if resp, raw := post(t, srv, body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, raw)
+	}
+	got := decodeBody(t, ollama.gotBody)
+	if got["model"] != "qwen-coder" {
+		t.Errorf("model = %v, want qwen-coder", got["model"])
+	}
+	if got["temperature"] != 0.5 || got["stream"] != false {
+		t.Errorf("temperature = %v, stream = %v; want 0.5 and false", got["temperature"], got["stream"])
+	}
+	want := map[string]any{"enable_thinking": true}
+	if ctk, ok := got["chat_template_kwargs"].(map[string]any); !ok || !reflect.DeepEqual(ctk, want) {
+		t.Errorf("chat_template_kwargs = %v, want the client's %v", got["chat_template_kwargs"], want)
 	}
 }

@@ -86,6 +86,8 @@ func (f *agentRouter) serve(w http.ResponseWriter, r *http.Request) {
 			agentToolCall(w, "read_file", `{"path":"hello.txt"}`)
 		case "write note.txt":
 			agentToolCall(w, "write_file", `{"path":"note.txt","content":"hi"}`)
+		case "write text note.txt":
+			agentTextCall(w, "write_file", "path", "note.txt", "content", "hi")
 		case "escape":
 			agentToolCall(w, "read_file", `{"path":"../secret.txt"}`)
 		case "run echo":

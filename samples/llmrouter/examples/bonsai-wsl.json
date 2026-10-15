@@ -34,8 +34,8 @@
     {
       "name": "code",
       "description": "Writing, explaining, reviewing or debugging source code.",
-      "backend": "ollama",
-      "model": "qwen2.5-coder:1.5b"
+      "backend": "bonsai",
+      "model": "Ternary-Bonsai-2-27B-PQ2_0.gguf"
     },
     {
       "name": "quick",
@@ -47,7 +47,8 @@
       "name": "reason",
       "description": "Hard problems that need careful step-by-step reasoning, planning, maths or long-form analysis.",
       "backend": "bonsai",
-      "model": "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+      "model": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+      "options": {"chat_template_kwargs": {"enable_thinking": false}}
     }
   ]
 }

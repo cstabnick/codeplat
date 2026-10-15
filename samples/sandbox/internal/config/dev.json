@@ -1,0 +1,10 @@
+{
+  "addr": "127.0.0.1:8087",
+  "driver": "docker",
+  "docker_host": "unix:///var/run/docker.sock",
+  "root": "",
+  "image": "debian:bookworm-slim",
+  "memory_mb": 2048,
+  "cpus": 2,
+  "network": "bridge"
+}

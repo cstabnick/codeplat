@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"llmrouter/internal/app"
+	"llmrouter/internal/apptest"
 	"llmrouter/internal/config"
 	"llmrouter/internal/llm"
 )
@@ -30,18 +30,10 @@ func requireLive(t *testing.T) {
 // startApp builds and starts an app from cfg and serves it over HTTP.
 func startApp(t *testing.T, cfg config.Config) *httptest.Server {
 	t.Helper()
-	a, err := app.New(cfg, nil)
-	if err != nil {
-		t.Fatalf("app.New: %v", err)
-	}
+	a := apptest.New(t, func(c *config.Config) { *c = cfg })
 	<-a.Start(context.Background())
 	srv := httptest.NewServer(a.Handler)
 	t.Cleanup(srv.Close)
-	t.Cleanup(func() {
-		if err := a.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
 	return srv
 }
 

@@ -35,11 +35,9 @@ type App struct {
 	logger  *log.Logger
 }
 
-// New builds every part from cfg. It starts nothing. logger nil means log.Default().
+// New builds every part from cfg. It starts nothing. It logs to logger,
+// which must not be nil.
 func New(cfg config.Config, logger *log.Logger) (*App, error) {
-	if logger == nil {
-		logger = log.Default()
-	}
 	a := &App{
 		Config:  cfg,
 		sups:    make(map[string]*supervisor.Supervisor, len(cfg.Backends)),

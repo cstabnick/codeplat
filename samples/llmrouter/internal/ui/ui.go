@@ -17,10 +17,6 @@ import (
 //go:embed page.html
 var pageFS embed.FS
 
-var tmpl = template.Must(template.New("page.html").Funcs(template.FuncMap{
-	"clock": func(t time.Time) string { return t.Format("15:04:05") },
-}).ParseFS(pageFS, "page.html"))
-
 // view is the data the template renders.
 type view struct {
 	Backends    []llm.BackendStatus
@@ -46,11 +42,16 @@ type backendModels struct {
 type handler struct {
 	fleet  llm.Fleet
 	router llm.Router
+	tmpl   *template.Template
 }
 
-// NewHandler serves the web page over the fleet and router.
+// NewHandler serves the web page over the fleet and router. It panics if
+// the embedded page does not parse.
 func NewHandler(f llm.Fleet, r llm.Router) http.Handler {
-	h := &handler{fleet: f, router: r}
+	tmpl := template.Must(template.New("page.html").Funcs(template.FuncMap{
+		"clock": func(t time.Time) string { return t.Format("15:04:05") },
+	}).ParseFS(pageFS, "page.html"))
+	h := &handler{fleet: f, router: r, tmpl: tmpl}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.page)
 	mux.HandleFunc("POST /try", h.try)
@@ -133,7 +134,7 @@ func (h *handler) render(w http.ResponseWriter, r *http.Request, v view) {
 	// Render into a buffer first, so that a failure produces a clean error
 	// response rather than a partial page.
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, v); err != nil {
+	if err := h.tmpl.Execute(&buf, v); err != nil {
 		http.Error(w, "render failed", http.StatusInternalServerError)
 		return
 	}

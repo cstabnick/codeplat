@@ -1,5 +1,4 @@
-// Package web is a read-only browser UI over core.Service: one tab per
-// project, a board of that project's issues by stage, and a page per issue.
+// Package web is a read-only browser UI over core.Service: a project switcher, a board of the selected project's issues by goal, epic and stage, and a page per issue.
 package web
 
 import (
@@ -38,18 +37,37 @@ var pageTemplate = template.Must(template.New("page").Funcs(template.FuncMap{
 	"ts": func(t time.Time) string { return t.Format("2006-01-02 15:04 MST") },
 }).Parse(pageHTML))
 
+// maxTabs is how many project tabs the header shows. Every project stays
+// reachable through the switcher and the /projects page.
+const maxTabs = 6
+
+// projectInfo is a project with counts of its issues.
+type projectInfo struct {
+	Key     string
+	Name    string
+	Open    int // issues whose status is not done
+	Blocked int // issues whose status is blocked; also counted in Open
+	Done    int // issues whose status is done
+	Total   int
+	Updated time.Time // when an issue of the project last changed; the project's CreatedAt if it has none
+	Filter  string    // strings.ToLower(Name + " " + Key), for the page's filter box
+}
+
 // page is everything the template renders. Navigation is plain links that
 // htmx boosts, and live regions poll their own URL and pick themselves out
 // of the response, so the server only ever renders whole pages.
 type page struct {
 	Title    string
-	Projects []core.Project
 	Active   string // key of the selected project tab
 	Message  string
 	Board    []column
 	Lanes    []lane
 	Issue    *core.Issue
 	Comments []core.Comment
+
+	Summaries []projectInfo // every project, ordered by lower-cased Name then Key
+	Tabs      []projectInfo // the projects shown as header tabs
+	Index     bool          // render the projects page instead of a board
 
 	IssueEpic      int
 	IssueDepends   []string
@@ -99,6 +117,7 @@ func NewHandler(ctx context.Context, svc *core.Service, log *slog.Logger) http.H
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.home)
+	mux.HandleFunc("GET /projects", h.projectsIndex)
 	mux.HandleFunc("GET /projects/{key}", h.project)
 	mux.HandleFunc("GET /issues/{id}", h.issue)
 	mux.Handle("GET /events", sse.Handler(b))
@@ -132,7 +151,12 @@ func (h *handler) project(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if project == nil {
-		h.render(w, http.StatusNotFound, page{Title: "Not found", Projects: projects, Message: "There is no project " + key + "."})
+		s, err := h.summaries(r.Context(), projects)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+		h.render(w, http.StatusNotFound, page{Title: "Not found", Summaries: s, Tabs: tabs(s, ""), Message: "There is no project " + key + "."})
 		return
 	}
 	issues, err := all(func(p core.Page) ([]core.Issue, error) {
@@ -147,7 +171,119 @@ func (h *handler) project(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	h.render(w, http.StatusOK, page{Title: project.Name, Projects: projects, Active: key, Board: board(issues), Lanes: lanes(issues, epics)})
+	s, err := h.summaries(r.Context(), projects)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	h.render(w, http.StatusOK, page{Title: project.Name, Active: key, Board: board(issues), Lanes: lanes(issues, epics), Summaries: s, Tabs: tabs(s, key)})
+}
+
+// projectsIndex renders the page listing every project with its counts.
+func (h *handler) projectsIndex(w http.ResponseWriter, r *http.Request) {
+	projects, err := h.svc.ListProjects(r.Context())
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	s, err := h.summaries(r.Context(), projects)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	h.render(w, http.StatusOK, page{Title: "Projects", Summaries: s, Tabs: tabs(s, ""), Index: true})
+}
+
+// summaries reads every issue and counts them per project.
+func (h *handler) summaries(ctx context.Context, projects []core.Project) ([]projectInfo, error) {
+	issues, err := all(func(p core.Page) ([]core.Issue, error) {
+		return h.svc.ListIssues(ctx, core.IssueFilter{Page: p})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return summaries(projects, issues), nil
+}
+
+// summaries counts each project's issues. The result has one entry per
+// project, ordered by strings.ToLower(Name), then Key.
+func summaries(projects []core.Project, issues []core.Issue) []projectInfo {
+	out := make([]projectInfo, len(projects))
+	index := make(map[string]int, len(projects))
+	for i, p := range projects {
+		out[i] = projectInfo{Key: p.Key, Name: p.Name, Filter: strings.ToLower(p.Name + " " + p.Key)}
+		index[p.Key] = i
+	}
+	for _, is := range issues {
+		i, ok := index[is.ProjectKey]
+		if !ok {
+			continue
+		}
+		s := &out[i]
+		s.Total++
+		if is.Status == core.StatusDone {
+			s.Done++
+		} else {
+			s.Open++
+		}
+		if is.Status == core.StatusBlocked {
+			s.Blocked++
+		}
+		if is.UpdatedAt.After(s.Updated) {
+			s.Updated = is.UpdatedAt
+		}
+	}
+	for i, p := range projects {
+		if out[i].Total == 0 {
+			out[i].Updated = p.CreatedAt
+		}
+	}
+	sort.Slice(out, func(a, b int) bool {
+		na, nb := strings.ToLower(out[a].Name), strings.ToLower(out[b].Name)
+		if na != nb {
+			return na < nb
+		}
+		return out[a].Key < out[b].Key
+	})
+	return out
+}
+
+// tabs picks the projects to show as tabs: the maxTabs most recently
+// updated (ties broken by Key), plus the active project if it is not among
+// them, which then replaces the last of them. active may be "" or unknown.
+// The result is ordered most recently updated first, and is nil for no projects.
+func tabs(all []projectInfo, active string) []projectInfo {
+	if len(all) == 0 {
+		return nil
+	}
+	sorted := make([]projectInfo, len(all))
+	copy(sorted, all)
+	sort.Slice(sorted, func(a, b int) bool {
+		if !sorted[a].Updated.Equal(sorted[b].Updated) {
+			return sorted[a].Updated.After(sorted[b].Updated)
+		}
+		return sorted[a].Key < sorted[b].Key
+	})
+	if len(sorted) > maxTabs {
+		sorted = sorted[:maxTabs]
+	}
+	out := make([]projectInfo, len(sorted))
+	copy(out, sorted)
+	if active == "" {
+		return out
+	}
+	for _, t := range out {
+		if t.Key == active {
+			return out
+		}
+	}
+	for _, p := range all {
+		if p.Key == active {
+			out[len(out)-1] = p
+			break
+		}
+	}
+	return out
 }
 
 func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +294,12 @@ func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
 	}
 	issue, err := h.svc.GetIssue(r.Context(), r.PathValue("id"))
 	if errors.Is(err, core.ErrNotFound) {
-		h.render(w, http.StatusNotFound, page{Title: "Not found", Projects: projects, Message: "There is no issue " + strings.ToUpper(r.PathValue("id")) + "."})
+		s, err := h.summaries(r.Context(), projects)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+		h.render(w, http.StatusNotFound, page{Title: "Not found", Summaries: s, Tabs: tabs(s, ""), Message: "There is no issue " + strings.ToUpper(r.PathValue("id")) + "."})
 		return
 	}
 	if err != nil {
@@ -199,9 +340,9 @@ func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s := summaries(projects, others)
 	h.render(w, http.StatusOK, page{
 		Title:          issue.ID + " " + issue.Title,
-		Projects:       projects,
 		Active:         issue.ProjectKey,
 		Issue:          &issue,
 		Comments:       comments,
@@ -210,6 +351,8 @@ func (h *handler) issue(w http.ResponseWriter, r *http.Request) {
 		IssueBlockedBy: blockers,
 		IssueParent:    issue.Parent,
 		IssueParts:     partRows,
+		Summaries:      s,
+		Tabs:           tabs(s, issue.ProjectKey),
 	})
 }
 

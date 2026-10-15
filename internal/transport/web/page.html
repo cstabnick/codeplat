@@ -6,6 +6,30 @@
 <title>{{.Title}} · codeplat</title>
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+<script>
+  document.addEventListener('input', function (e) {
+    var t = e.target;
+    if (!t.hasAttribute || !t.hasAttribute('data-filter-list')) return;
+    var list = document.querySelector(t.getAttribute('data-filter-list'));
+    if (!list) return;
+    var q = t.value.trim().toLowerCase();
+    list.querySelectorAll('[data-filter]').forEach(function (el) {
+      el.hidden = q !== '' && el.getAttribute('data-filter').indexOf(q) === -1;
+    });
+  });
+  document.addEventListener('toggle', function (e) {
+    var d = e.target;
+    if (d.matches && d.matches('details.switcher') && d.open) {
+      var f = d.querySelector('#project-filter');
+      if (f) f.focus();
+    }
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    var open = document.querySelector('details.switcher[open]');
+    if (open) open.removeAttribute('open');
+  });
+</script>
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --line: #dfe3e8; --text: #1c2430; --muted: #66707d;
@@ -20,9 +44,9 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
   a { color: inherit; text-decoration: none; }
-  header { display: flex; align-items: flex-end; gap: 24px; padding: 12px 16px 0; background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; }
+  header { display: flex; align-items: flex-end; gap: 24px; padding: 12px 16px 0; background: var(--panel); border-bottom: 1px solid var(--line); overflow: visible; }
   .brand { font-weight: 700; padding-bottom: 10px; }
-  .tabs { display: flex; gap: 4px; }
+  .tabs { display: flex; gap: 4px; min-width: 0; overflow-x: auto; }
   .tab { padding: 8px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--muted); white-space: nowrap; }
   .tab small { margin-left: 6px; font-size: 12px; opacity: .8; }
   .tab:hover { color: var(--text); }
@@ -58,18 +82,72 @@
   .comment { margin-bottom: 8px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
   .comment .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .comment .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+  .switcher { position: relative; margin-left: auto; padding-bottom: 8px; }
+  .switcher > summary { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; list-style: none; white-space: nowrap; }
+  .switcher > summary::-webkit-details-marker { display: none; }
+  .switcher > summary small { color: var(--muted); }
+  .panel { position: absolute; right: 0; top: 100%; z-index: 10; width: min(420px, calc(100vw - 32px)); max-height: 70vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+  input[type=search] { width: 100%; padding: 6px 10px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .project-list { list-style: none; margin: 8px 0; padding: 0; }
+  .project-link { display: flex; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 6px; }
+  .project-link small { color: var(--muted); }
+  .project-link:hover, .project-link.active { background: var(--bg); }
+  .project-link.active { color: var(--accent); font-weight: 600; }
+  .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pcount { color: var(--muted); font-size: 13px; }
+  .all-link { display: block; padding-top: 6px; color: var(--accent); font-size: 14px; }
+  #projects h1 { margin: 8px 0 12px; font-size: 22px; }
+  #projects input[type=search] { margin-bottom: 12px; }
+  table.projects { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); }
+  table.projects th, table.projects td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: right; }
+  table.projects th:first-child, table.projects td:first-child { text-align: left; }
+  table.projects th { color: var(--muted); font-size: 13px; font-weight: 600; }
+  table.projects td small { color: var(--muted); margin-left: 4px; }
+  @media (max-width: 640px) { .tab:not(.active) { display: none; } }
 </style>
 </head>
 <body hx-boost="true">
 <header>
   <span class="brand">codeplat</span>
   <nav class="tabs">
-    {{range .Projects}}<a class="tab{{if eq .Key $.Active}} active{{end}}" href="/projects/{{.Key}}">{{.Name}}<small>{{.Key}}</small></a>
+    {{range .Tabs}}<a class="tab{{if eq .Key $.Active}} active{{end}}" href="/projects/{{.Key}}">{{.Name}}<small>{{.Key}}</small></a>
     {{end}}
   </nav>
+  {{if .Summaries}}
+  <details class="switcher">
+    <summary>All projects <small>{{len .Summaries}}</small></summary>
+    <div class="panel">
+      <input id="project-filter" type="search" placeholder="Filter projects…" autocomplete="off" data-filter-list="#switcher-list">
+      <ul id="switcher-list" class="project-list">
+        {{range .Summaries}}<li data-filter="{{.Filter}}"><a class="project-link{{if eq .Key $.Active}} active{{end}}" href="/projects/{{.Key}}"><span class="pname">{{.Name}}</span><small>{{.Key}}</small><span class="pcount">{{.Open}} open</span></a></li>
+        {{end}}
+      </ul>
+      <a class="all-link" href="/projects">Open the projects page</a>
+    </div>
+  </details>
+  {{end}}
 </header>
 <main>
 {{if .Message}}<p class="empty">{{.Message}}</p>{{end}}
+
+{{if .Index}}
+<section id="projects">
+  <h1>Projects</h1>
+  {{if .Summaries}}
+  <input id="index-filter" type="search" placeholder="Filter projects…" autocomplete="off" data-filter-list="#project-rows">
+  <table class="projects">
+    <thead><tr><th>Project</th><th>Open</th><th>Blocked</th><th>Done</th><th>Total</th><th>Last change</th></tr></thead>
+    <tbody id="project-rows">
+      {{range .Summaries}}<tr data-filter="{{.Filter}}"><td><a href="/projects/{{.Key}}">{{.Name}}</a> <small>{{.Key}}</small></td><td>{{.Open}}</td><td>{{.Blocked}}</td><td>{{.Done}}</td><td>{{.Total}}</td><td>{{ts .Updated}}</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No projects yet.</p>
+  {{end}}
+</section>
+{{end}}
 
 {{if .Board}}
 <div hx-ext="sse" sse-connect="/events?topic=project.{{.Active}}">

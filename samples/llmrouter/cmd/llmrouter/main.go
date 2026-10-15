@@ -28,11 +28,12 @@ func run() error {
 	configPath := flag.String("config", os.Getenv("LLMROUTER_CONFIG"), "path to a JSON config; empty uses the built-in default")
 	flag.Parse()
 
+	logger := log.New(os.Stderr, "", log.LstdFlags)
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
 	}
-	a, err := app.New(cfg, log.Default())
+	a, err := app.New(cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -44,13 +45,13 @@ func run() error {
 	srv := &http.Server{Addr: cfg.Addr, Handler: a.Handler, ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Printf("llmrouter listening on http://%s", cfg.Addr)
+	logger.Printf("llmrouter listening on http://%s", cfg.Addr)
 
 	select {
 	case err := <-errc:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			if cerr := a.Close(); cerr != nil {
-				log.Printf("close: %v", cerr)
+				logger.Printf("close: %v", cerr)
 			}
 			return err
 		}
@@ -60,7 +61,7 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
+		logger.Printf("shutdown: %v", err)
 	}
 	return a.Close()
 }

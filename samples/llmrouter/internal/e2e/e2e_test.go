@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"llmrouter/internal/app"
+	"llmrouter/internal/apptest"
 	"llmrouter/internal/config"
 	"llmrouter/internal/llm"
 )
@@ -247,32 +247,18 @@ func TestEndToEnd(t *testing.T) {
 	ollamaSrv := fakeOllama(t, rec)
 	bonsaiSrv := fakeBonsai(t, rec)
 
-	cfg := config.Config{
-		Addr: "127.0.0.1:0",
-		Backends: []config.Backend{
+	a := apptest.New(t, func(cfg *config.Config) {
+		cfg.Backends = []config.Backend{
 			{Name: "ollama", Kind: llm.KindOllama, URL: ollamaSrv.URL, PullMissing: true},
 			{Name: "bonsai", Kind: llm.KindOpenAI, URL: bonsaiSrv.URL},
-		},
-		Intent: config.Intent{Backend: "ollama", Model: "llama3.2:1b"},
-		Routes: []llm.Route{
+		}
+		cfg.Intent = config.Intent{Backend: "ollama", Model: "llama3.2:1b"}
+		cfg.Routes = []llm.Route{
 			{Name: "general", Backend: "ollama", Model: "llama3:8b"},
 			{Name: "code", Backend: "ollama", Model: "qwen2.5-coder:1.5b"},
 			{Name: "reason", Backend: "bonsai", Model: "bonsai-27b"},
-		},
-		DefaultRoute: "general",
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("config is invalid: %v", err)
-	}
-
-	a, err := app.New(cfg, nil)
-	if err != nil {
-		t.Fatalf("app.New: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := a.Close(); err != nil {
-			t.Errorf("Close: %v", err)
 		}
+		cfg.DefaultRoute = "general"
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

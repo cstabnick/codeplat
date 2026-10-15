@@ -370,7 +370,7 @@ func TestBoardGroupsByGoalAndEpic(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("project without goals = %d", code)
 	}
-	if strings.Contains(body, "<details") {
+	if strings.Contains(body, `<details class="lane"`) {
 		t.Error("a project without goals has a lane")
 	}
 	if strings.Contains(body, "Other issues") {
@@ -467,5 +467,142 @@ func TestIssuePageShowsGoalAndParts(t *testing.T) {
 	}
 	if strings.Contains(body, "Part of") || strings.Contains(body, ">Parts<") {
 		t.Error("issue with no parent and no parts should show neither Part of nor Parts")
+	}
+}
+
+func TestProjectsIndex(t *testing.T) {
+	ctx := context.Background()
+	a := apptest.New(t)
+	h := web.NewHandler(t.Context(), a.Service, a.Log)
+
+	code, body, _ := get(t, h, "/projects")
+	if code != http.StatusOK {
+		t.Fatalf("empty /projects = %d; want 200", code)
+	}
+	if !strings.Contains(body, "<title>Projects · codeplat</title>") {
+		t.Errorf("empty /projects is missing the Projects title")
+	}
+
+	if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: "AAA", Name: "Alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: "BBB", Name: "Beta"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Service.CreateIssue(ctx, core.NewIssue{ProjectKey: "AAA", Title: "Listed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ = get(t, h, "/projects")
+	if code != http.StatusOK {
+		t.Fatalf("/projects = %d; want 200", code)
+	}
+	if !strings.Contains(body, "<title>Projects · codeplat</title>") {
+		t.Errorf("/projects is missing the Projects title")
+	}
+	for _, want := range []string{`href="/projects/AAA"`, `href="/projects/BBB"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/projects is missing %q", want)
+		}
+	}
+}
+
+func TestPagesRenderWithSwitcher(t *testing.T) {
+	ctx := context.Background()
+	a := apptest.New(t)
+	h := web.NewHandler(t.Context(), a.Service, a.Log)
+
+	for _, key := range []string{"AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"} {
+		if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: key, Name: "Project " + key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.Service.CreateIssue(ctx, core.NewIssue{ProjectKey: "AAA", Title: "First"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The project page renders, with the selected project in the tabs.
+	code, body, _ := get(t, h, "/projects/GGG")
+	if code != http.StatusOK {
+		t.Fatalf("project page = %d; want 200", code)
+	}
+	if !strings.Contains(body, `<a class="tab active" href="/projects/GGG">`) {
+		t.Error("project page does not show GGG as the active tab")
+	}
+
+	// The issue page renders with its project's tab active.
+	code, body, _ = get(t, h, "/issues/AAA-1")
+	if code != http.StatusOK {
+		t.Fatalf("issue page = %d; want 200", code)
+	}
+	if !strings.Contains(body, `<a class="tab active" href="/projects/AAA">`) {
+		t.Error("issue page does not show AAA as the active tab")
+	}
+
+	// Both not-found pages still render, with the switcher.
+	code, body, _ = get(t, h, "/projects/NOPE")
+	if code != http.StatusNotFound || !strings.Contains(body, "no project NOPE") || !strings.Contains(body, `href="/projects/AAA"`) {
+		t.Errorf("missing project = %d; want a 404 page with the switcher", code)
+	}
+	code, body, _ = get(t, h, "/issues/ZZZ-9")
+	if code != http.StatusNotFound || !strings.Contains(body, "no issue ZZZ-9") || !strings.Contains(body, `href="/projects/AAA"`) {
+		t.Errorf("missing issue = %d; want a 404 page with the switcher", code)
+	}
+}
+
+func TestSwitcherWithManyProjects(t *testing.T) {
+	ctx := context.Background()
+	a := apptest.New(t)
+	h := web.NewHandler(t.Context(), a.Service, a.Log)
+
+	keys := []string{"AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HTM"}
+	for _, key := range keys {
+		name := "Project " + key
+		if key == "HTM" {
+			name = "<b>Bad</b> name"
+		}
+		if _, err := a.Service.CreateProject(ctx, core.NewProject{Key: key, Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.Service.CreateIssue(ctx, core.NewIssue{ProjectKey: "AAA", Title: "Listed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body, _ := get(t, h, "/projects/AAA")
+	if code != http.StatusOK {
+		t.Fatalf("project page = %d; want 200", code)
+	}
+	if n := strings.Count(body, `<a class="tab`); n != 6 {
+		t.Errorf("header shows %d tabs; want 6", n)
+	}
+	if !strings.Contains(body, `<a class="tab active" href="/projects/AAA">`) {
+		t.Error("selected project AAA is not an active tab")
+	}
+	if n := strings.Count(body, `class="project-link`); n != len(keys) {
+		t.Errorf("switcher lists %d projects; want %d", n, len(keys))
+	}
+	if n := strings.Count(body, `<script>`); n != 1 {
+		t.Errorf("project page has %d inline scripts; want 1", n)
+	}
+	if strings.Contains(body, "<b>Bad</b>") || !strings.Contains(body, "&lt;b&gt;Bad") {
+		t.Error("project name is not escaped in the page")
+	}
+
+	code, body, _ = get(t, h, "/projects")
+	if code != http.StatusOK {
+		t.Fatalf("/projects = %d; want 200", code)
+	}
+	if n := strings.Count(body, `<tr data-filter=`); n != len(keys) {
+		t.Errorf("/projects lists %d rows; want %d", n, len(keys))
+	}
+	if !strings.Contains(body, `<td>1</td>`) {
+		t.Error("/projects does not show the open count of AAA")
+	}
+	if strings.Contains(body, "<b>Bad</b>") || !strings.Contains(body, "&lt;b&gt;Bad") {
+		t.Error("project name is not escaped on /projects")
+	}
+	if n := strings.Count(body, `<script>`); n != 1 {
+		t.Errorf("/projects has %d inline scripts; want 1", n)
 	}
 }

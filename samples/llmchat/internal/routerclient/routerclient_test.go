@@ -1,6 +1,7 @@
 package routerclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -456,5 +457,302 @@ func TestRoutesServerErrorIsError(t *testing.T) {
 	c := New(srv.URL, nil)
 	if _, err := c.Routes(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
 		t.Errorf("error = %v, want 500", err)
+	}
+}
+
+func TestDebugLogRecordsFinishReasonLength(t *testing.T) {
+	stream := sseHandler(t, nil,
+		dataLine(`{"choices":[{"delta":{"content":"abc"},"finish_reason":null}]}`),
+		dataLine(`{"choices":[{"delta":{},"finish_reason":"length"}]}`),
+		dataLine("[DONE]"),
+	)
+	srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Llmrouter-Route", "code")
+		w.Header().Set("X-Llmrouter-Backend", "bonsai")
+		w.Header().Set("X-Llmrouter-Model", "Ternary-Bonsai")
+		stream(w, r)
+	})
+	var out bytes.Buffer
+	c := New(srv.URL, nil).WithDebugLog(&out)
+	if _, err := c.Complete(context.Background(), chat.CompletionRequest{Model: "m"}, nil); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !strings.Contains(out.String(), `"finish_reason":"length"`) {
+		t.Errorf("debug log has no finish_reason length:\n%s", out.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("debug log has %d lines, want 1:\n%s", len(lines), out.String())
+	}
+	var rec debugRecord
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatalf("debug line is not JSON: %v", err)
+	}
+	if rec.Route != "code" || rec.Backend != "bonsai" || rec.Model != "Ternary-Bonsai" {
+		t.Errorf("route/backend/model = %q/%q/%q", rec.Route, rec.Backend, rec.Model)
+	}
+	if len(rec.Chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3", len(rec.Chunks))
+	}
+	if rec.Chunks[1].FinishReason == nil || *rec.Chunks[1].FinishReason != "length" {
+		t.Errorf("chunk 1 finish_reason = %v, want length", rec.Chunks[1].FinishReason)
+	}
+	if rec.ContentLength != 3 || rec.ReasoningLength != 0 || rec.ToolCalls != 0 {
+		t.Errorf("sizes = content %d, reasoning %d, tool calls %d", rec.ContentLength, rec.ReasoningLength, rec.ToolCalls)
+	}
+}
+
+func TestNoDebugWriterWritesNothing(t *testing.T) {
+	srv := newServer(t, sseHandler(t, nil,
+		chunk(`{"content":"hi"}`),
+		dataLine("[DONE]"),
+	))
+	c := New(srv.URL, nil).WithDebugLog(nil)
+	if c.debug != nil {
+		t.Fatal("WithDebugLog(nil) turned the debug log on")
+	}
+	msg, err := c.Complete(context.Background(), chat.CompletionRequest{Model: "m"}, nil)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if msg.Content != "hi" {
+		t.Errorf("Content = %q, want hi", msg.Content)
+	}
+}
+
+// textTools is the request's tool list for the text-call tests: write_file as
+// the chat tools declare it, and resize with one property of each typed kind.
+var textTools = []chat.ToolSpec{
+	{
+		Name:        "write_file",
+		Description: "Create a file.",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`),
+	},
+	{
+		Name:        "resize",
+		Description: "Resize.",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"count":{"type":"integer"},"force":{"type":"boolean"},"ratio":{"type":"number"}}}`),
+	},
+}
+
+// textReply streams text as the reply content, with no structured tool calls,
+// and completes a request that offers tools.
+func textReply(t *testing.T, text string, tools []chat.ToolSpec) (chat.Message, []chat.Event, error) {
+	t.Helper()
+	srv := newServer(t, sseHandler(t, nil,
+		chunk(`{"content":`+mustJSON(t, text)+`}`),
+		dataLine("[DONE]"),
+	))
+	var events []chat.Event
+	msg, err := New(srv.URL, nil).Complete(context.Background(), chat.CompletionRequest{Model: "m", Tools: tools}, collect(&events))
+	return msg, events, err
+}
+
+func errorEvents(events []chat.Event) []chat.Event {
+	var out []chat.Event
+	for _, ev := range events {
+		if ev.Type == chat.EventError {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func TestWellFormedTextCallConvertsToToolCall(t *testing.T) {
+	text := "Let me write it.\n<tool_call>\n<function=write_file>\n<parameter=path>\nnote.txt\n</parameter>\n<parameter=content>\nline one\nline two\n</parameter>\n</function>\n</tool_call>"
+	msg, events, err := textReply(t, text, textTools)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %+v, want one call", msg.ToolCalls)
+	}
+	tc := msg.ToolCalls[0]
+	if tc.Name != "write_file" || tc.ID != "text-1" {
+		t.Errorf("call = name %q id %q, want write_file text-1", tc.Name, tc.ID)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+		t.Fatalf("Arguments %q is not JSON: %v", tc.Arguments, err)
+	}
+	if want := map[string]any{"path": "note.txt", "content": "line one\nline two"}; !reflect.DeepEqual(args, want) {
+		t.Errorf("Arguments = %v, want %v", args, want)
+	}
+	if msg.Content != text {
+		t.Errorf("Content = %q, want the reply text kept unchanged", msg.Content)
+	}
+	if len(errorEvents(events)) != 0 {
+		t.Errorf("events = %+v, want no error event", events)
+	}
+}
+
+func TestTextCallValueTrimsOnlyOneNewline(t *testing.T) {
+	cases := map[string]string{
+		"no newline":   "<parameter=content>x</parameter>",
+		"one newline":  "<parameter=content>\nx\n</parameter>",
+		"two newlines": "<parameter=content>\n\nx\n\n</parameter>",
+		"spaces kept":  "<parameter=content>  x  </parameter>",
+	}
+	want := map[string]string{
+		"no newline":   "x",
+		"one newline":  "x",
+		"two newlines": "\nx\n",
+		"spaces kept":  "  x  ",
+	}
+	for name, param := range cases {
+		text := "<tool_call>\n<function=write_file>\n<parameter=path>\na.txt\n</parameter>\n" + param + "\n</function>\n</tool_call>"
+		msg, _, err := textReply(t, text, textTools)
+		if err != nil {
+			t.Fatalf("%s: Complete: %v", name, err)
+		}
+		if len(msg.ToolCalls) != 1 {
+			t.Fatalf("%s: ToolCalls = %+v, want one call", name, msg.ToolCalls)
+		}
+		var args map[string]string
+		if err := json.Unmarshal([]byte(msg.ToolCalls[0].Arguments), &args); err != nil {
+			t.Fatalf("%s: Arguments: %v", name, err)
+		}
+		if args["content"] != want[name] {
+			t.Errorf("%s: content = %q, want %q", name, args["content"], want[name])
+		}
+	}
+}
+
+func TestMalformedTextCallConvertsNothingAndEmitsError(t *testing.T) {
+	text := "Let me check the directory contents:\n<tool_call>\n<function=ls -la\n</parameter>\n</tool_call>"
+	msg, events, err := textReply(t, text, textTools)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if msg.ToolCalls != nil {
+		t.Errorf("ToolCalls = %+v, want none", msg.ToolCalls)
+	}
+	if msg.Content != text {
+		t.Errorf("Content = %q, want the reply text kept unchanged", msg.Content)
+	}
+	errs := errorEvents(events)
+	if len(errs) != 1 || errs[0].Error != "could not read a tool call in the reply; no tool was run" {
+		t.Fatalf("error events = %+v, want exactly one with the stated text", errs)
+	}
+	if last := events[len(events)-1]; last.Type != chat.EventError {
+		t.Errorf("last event = %+v, want the error after the content", last)
+	}
+}
+
+func TestMalformedTextCallVariants(t *testing.T) {
+	bad := map[string]string{
+		"unclosed function":  "<tool_call><function=write_file><parameter=path>a</parameter></tool_call>",
+		"unclosed parameter": "<tool_call><function=write_file><parameter=path>a</function></tool_call>",
+		"unnamed parameter":  "<tool_call><function=write_file><parameter=>a</parameter></function></tool_call>",
+		"text between tags":  "<tool_call>oops<function=write_file></function></tool_call>",
+		"bad integer":        "<tool_call><function=resize><parameter=count>x</parameter></function></tool_call>",
+		"bad boolean":        "<tool_call><function=resize><parameter=force>yes</parameter></function></tool_call>",
+		"repeated key":       "<tool_call><function=write_file><parameter=path>a</parameter><parameter=path>b</parameter></function></tool_call>",
+	}
+	for name, text := range bad {
+		msg, events, err := textReply(t, text, textTools)
+		if err != nil {
+			t.Fatalf("%s: Complete: %v", name, err)
+		}
+		if msg.ToolCalls != nil {
+			t.Errorf("%s: ToolCalls = %+v, want none", name, msg.ToolCalls)
+		}
+		if len(errorEvents(events)) != 1 {
+			t.Errorf("%s: events = %+v, want one error event", name, events)
+		}
+	}
+}
+
+func TestWellFormedTextCallForUnknownNameIsIgnored(t *testing.T) {
+	text := "<tool_call>\n<function=bash>\n<parameter=command>\necho hi\n</parameter>\n</function>\n</tool_call>"
+	msg, events, err := textReply(t, text, textTools)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if msg.ToolCalls != nil {
+		t.Errorf("ToolCalls = %+v, want none", msg.ToolCalls)
+	}
+	if len(errorEvents(events)) != 0 {
+		t.Errorf("events = %+v, want no error event", events)
+	}
+}
+
+func TestUnknownNameSkippedKnownNameConverts(t *testing.T) {
+	text := "<tool_call><function=bash><parameter=command>ls</parameter></function></tool_call>" +
+		"<tool_call><function=write_file><parameter=path>a.txt</parameter><parameter=content>b</parameter></function></tool_call>"
+	msg, events, err := textReply(t, text, textTools)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].ID != "text-1" || msg.ToolCalls[0].Name != "write_file" {
+		t.Fatalf("ToolCalls = %+v, want one write_file as text-1", msg.ToolCalls)
+	}
+	if len(errorEvents(events)) != 0 {
+		t.Errorf("events = %+v, want no error event", events)
+	}
+}
+
+func TestTwoTextCallsNumberedInOrder(t *testing.T) {
+	text := "<tool_call><function=write_file><parameter=path>a</parameter><parameter=content>1</parameter></function></tool_call>\n" +
+		"<tool_call><function=write_file><parameter=path>b</parameter><parameter=content>2</parameter></function></tool_call>"
+	msg, _, err := textReply(t, text, textTools)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls = %+v, want two", msg.ToolCalls)
+	}
+	for i, id := range []string{"text-1", "text-2"} {
+		if msg.ToolCalls[i].ID != id {
+			t.Errorf("call %d id = %q, want %q", i, msg.ToolCalls[i].ID, id)
+		}
+	}
+}
+
+func TestTypedTextArguments(t *testing.T) {
+	ok := "<tool_call><function=resize><parameter=count>3</parameter><parameter=force>true</parameter><parameter=ratio>0.5</parameter></function></tool_call>"
+	msg, _, err := textReply(t, ok, textTools)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Arguments != `{"count":3,"force":true,"ratio":0.5}` {
+		t.Fatalf("ToolCalls = %+v, want resize with typed arguments", msg.ToolCalls)
+	}
+}
+
+func TestStructuredCallWinsOverTextCall(t *testing.T) {
+	text := "<tool_call><function=write_file><parameter=path>a</parameter><parameter=content>b</parameter></function></tool_call>"
+	srv := newServer(t, sseHandler(t, nil,
+		chunk(`{"content":`+mustJSON(t, text)+`}`),
+		chunk(`{"tool_calls":[{"index":0,"id":"call_s","function":{"name":"read_file","arguments":"{\"path\":\"a\"}"}}]}`),
+		dataLine("[DONE]"),
+	))
+	var events []chat.Event
+	msg, err := New(srv.URL, nil).Complete(context.Background(), chat.CompletionRequest{Model: "m", Tools: textTools}, collect(&events))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := []chat.ToolCall{{ID: "call_s", Name: "read_file", Arguments: `{"path":"a"}`}}
+	if !reflect.DeepEqual(msg.ToolCalls, want) {
+		t.Fatalf("ToolCalls = %+v, want only the structured call %+v", msg.ToolCalls, want)
+	}
+}
+
+func TestStreamErrorSkipsTextFallback(t *testing.T) {
+	text := "<tool_call><function=write_file><parameter=path>a</parameter><parameter=content>b</parameter></function></tool_call>"
+	srv := newServer(t, sseHandler(t, nil,
+		chunk(`{"content":`+mustJSON(t, text)+`}`),
+		dataLine("{not json"),
+	))
+	var events []chat.Event
+	msg, err := New(srv.URL, nil).Complete(context.Background(), chat.CompletionRequest{Model: "m", Tools: textTools}, collect(&events))
+	if err == nil {
+		t.Fatal("Complete: no error for a broken stream chunk")
+	}
+	if msg.ToolCalls != nil {
+		t.Errorf("ToolCalls = %+v, want none after a stream error", msg.ToolCalls)
+	}
+	if len(errorEvents(events)) != 0 {
+		t.Errorf("events = %+v, want no text-call error after a stream error", events)
 	}
 }

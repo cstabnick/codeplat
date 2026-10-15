@@ -38,7 +38,7 @@ type Options struct {
 	// PollInterval is how often Health is called while waiting. Zero
 	// means 500 milliseconds.
 	PollInterval time.Duration
-	// Log receives progress lines. Nil means log.Default().
+	// Log receives progress lines. It must not be nil.
 	Log *log.Logger
 }
 
@@ -56,11 +56,7 @@ type Supervisor struct {
 
 // New returns a Supervisor for opts.
 func New(opts Options) *Supervisor {
-	lg := opts.Log
-	if lg == nil {
-		lg = log.Default()
-	}
-	return &Supervisor{opts: opts, log: lg}
+	return &Supervisor{opts: opts, log: opts.Log}
 }
 
 // Start makes sure the backend answers. If Health succeeds it returns

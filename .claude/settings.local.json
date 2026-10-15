@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "codeplat"
+  ],
+  "enableAllProjectMcpServers": true
+}

@@ -22,11 +22,8 @@ const maxBodyBytes = 8 << 20
 const copyBufBytes = 32 << 10
 
 // NewHandler serves the OpenAI-compatible API over the fleet's
-// backends, choosing models with r. logger nil means log.Default().
+// backends, choosing models with r. It logs to logger, which must not be nil.
 func NewHandler(f llm.Fleet, r llm.Router, logger *log.Logger) http.Handler {
-	if logger == nil {
-		logger = log.Default()
-	}
 	h := &handler{fleet: f, router: r, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", h.chatCompletions)
@@ -69,13 +66,18 @@ func (h *handler) chatCompletions(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var routeName, backendName, chosenModel string
+	var options json.RawMessage // the route's options; nil when no route applies
 	switch {
 	case model == "" || model == llm.AutoModel:
 		d := h.router.Route(ctx, messages)
 		routeName, backendName, chosenModel = d.Route, d.Backend, d.Model
+		if rt, ok := findRoute(h.router.Routes(), d.Route); ok {
+			options = rt.Options
+		}
 	default:
 		if rt, ok := findRoute(h.router.Routes(), model); ok {
 			routeName, backendName, chosenModel = rt.Name, rt.Backend, rt.Model
+			options = rt.Options
 		} else if prefix, rest, ok := strings.Cut(model, "/"); ok && h.knownBackend(prefix) {
 			backendName, chosenModel = prefix, rest
 		} else {
@@ -85,6 +87,7 @@ func (h *handler) chatCompletions(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			backendName, chosenModel = rt.Backend, model
+			options = rt.Options
 		}
 	}
 
@@ -97,6 +100,10 @@ func (h *handler) chatCompletions(w http.ResponseWriter, req *http.Request) {
 	body["model"], err = json.Marshal(chosenModel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encode model: "+err.Error())
+		return
+	}
+	if err := applyOptions(body, options); err != nil {
+		writeError(w, http.StatusInternalServerError, "route options: "+err.Error())
 		return
 	}
 	out, err := json.Marshal(body)
@@ -258,6 +265,25 @@ func contentText(raw json.RawMessage) (string, error) {
 	default:
 		return "", errors.New(`"content" must be a string, null or an array`)
 	}
+}
+
+// applyOptions sets each top-level field of options on body, replacing the
+// client's field with the same name and leaving the other fields alone. The
+// merge is shallow: a replaced object's sibling keys are dropped. Absent or
+// null options change nothing. The config loader guarantees options is an
+// object without "model".
+func applyOptions(body map[string]json.RawMessage, options json.RawMessage) error {
+	if len(options) == 0 {
+		return nil
+	}
+	var opts map[string]json.RawMessage
+	if err := json.Unmarshal(options, &opts); err != nil {
+		return err
+	}
+	for k, v := range opts {
+		body[k] = v
+	}
+	return nil
 }
 
 // findRoute returns the route with this name.

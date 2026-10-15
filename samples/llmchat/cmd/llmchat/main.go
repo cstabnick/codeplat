@@ -12,18 +12,23 @@ import (
 	"time"
 
 	"llmchat/internal/app"
+	"llmchat/internal/config"
 )
 
 func main() {
-	config := app.ConfigFromEnv()
-	a, err := app.New(config)
+	cfg, err := config.FromEnvironment()
+	if err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+	a, err := app.New(cfg)
 	if err != nil {
 		log.Print(err)
 		os.Exit(1)
 	}
 
 	srv := &http.Server{
-		Addr:              config.Addr,
+		Addr:              cfg.Addr,
 		Handler:           a.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -33,7 +38,7 @@ func main() {
 
 	errc := make(chan error, 1)
 	go func() {
-		log.Printf("llmchat listening on http://%s (router %s, db %s)", config.Addr, config.RouterURL, config.DBPath)
+		log.Printf("llmchat listening on http://%s (router %s, db %s)", cfg.Addr, cfg.RouterURL, cfg.DBPath)
 		errc <- srv.ListenAndServe()
 	}()
 

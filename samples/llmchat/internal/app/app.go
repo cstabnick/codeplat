@@ -3,66 +3,44 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 
 	"llmchat/internal/agent"
 	"llmchat/internal/api"
+	"llmchat/internal/chat"
+	"llmchat/internal/config"
 	"llmchat/internal/routerclient"
 	"llmchat/internal/sqlitestore"
+	"llmchat/internal/tools/edit"
+	"llmchat/internal/tools/fs"
+	"llmchat/internal/tools/search"
+	"llmchat/internal/tools/shell"
 	"llmchat/internal/web"
 )
 
-// Config holds the settings the server runs with.
-type Config struct {
-	Addr      string // listen address
-	DBPath    string // SQLite file
-	RouterURL string // the llmrouter base URL
-}
-
-// ConfigFromEnv reads CHAT_ADDR (default "127.0.0.1:8084"), CHAT_DB
-// (default: $XDG_DATA_HOME/llmchat/llmchat.db, else
-// ~/.local/share/llmchat/llmchat.db) and CHAT_ROUTER_URL (default
-// "http://127.0.0.1:8083"). An empty variable counts as unset.
-func ConfigFromEnv() Config {
-	return Config{
-		Addr:      envOr("CHAT_ADDR", "127.0.0.1:8084"),
-		DBPath:    envOr("CHAT_DB", defaultDBPath()),
-		RouterURL: envOr("CHAT_ROUTER_URL", "http://127.0.0.1:8083"),
-	}
-}
-
-func envOr(name, def string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return def
-}
-
-func defaultDBPath() string {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "."
-		}
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dataHome, "llmchat", "llmchat.db")
-}
+// SystemPrompt is sent first in every request. The engine adds the workspace
+// directory after it when the conversation has one.
+const SystemPrompt = "You are a coding assistant. You can read, search and edit files and run shell commands in the workspace directory using the provided tools. Look at files before changing them, make small focused edits, and explain briefly what you did. Tool calls that change files or run commands are shown to the person for approval first."
 
 // App is a built server. Handler serves the API and the page.
 type App struct {
 	Handler http.Handler
 
-	store *sqlitestore.Store
+	store     *sqlitestore.Store
+	debugFile *os.File // the raw stream log; nil when off
 }
 
 // New opens the database (creating its directory with os.MkdirAll,
-// mode 0o755, first) and builds everything. It starts nothing.
-func New(cfg Config) (*App, error) {
+// mode 0o755, first) and builds everything. When cfg.DebugStreamPath is set
+// it opens that file for appending (created with mode 0o644) as the raw
+// stream log. It starts nothing.
+func New(cfg config.Config) (*App, error) {
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		return nil, fmt.Errorf("app: create database directory: %w", err)
 	}
@@ -71,11 +49,32 @@ func New(cfg Config) (*App, error) {
 		return nil, fmt.Errorf("app: %w", err)
 	}
 
-	routerClient := routerclient.New(cfg.RouterURL, nil)
-	approvals := api.NewApprovals()
-	engine := agent.New(store, routerClient, nil, approvals, agent.Options{})
+	var debugFile *os.File
+	var debugOut io.Writer
+	if cfg.DebugStreamPath != "" {
+		f, err := os.OpenFile(cfg.DebugStreamPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			store.Close()
+			return nil, fmt.Errorf("app: open debug stream log: %w", err)
+		}
+		debugFile = f
+		debugOut = f
+	}
 
-	apiHandler := api.NewHandler(store, engine, approvals, routerClient.Routes)
+	routerClient := routerclient.New(cfg.RouterURL, nil).WithDebugLog(debugOut)
+	approvals := api.NewApprovals()
+	tools := []chat.Tool{
+		fs.ReadFile(), fs.ListDir(), search.Grep(),
+		edit.WriteFile(), edit.EditFile(), shell.Bash(),
+	}
+	engine := agent.New(store, routerClient, tools, approvals, agent.Options{
+		System:   SystemPrompt,
+		MaxSteps: cfg.MaxSteps,
+	})
+
+	logger := log.New(os.Stderr, "llmchat: ", log.LstdFlags)
+	apiStore := defaultWorkspaceStore{Store: store, workspace: cfg.Workspace}
+	apiHandler := api.NewHandler(apiStore, engine, approvals, routerClient.Routes, logger)
 	webHandler := web.NewHandler()
 
 	mux := http.NewServeMux()
@@ -83,10 +82,30 @@ func New(cfg Config) (*App, error) {
 	mux.Handle("/healthz", apiHandler)
 	mux.Handle("/", webHandler)
 
-	return &App{Handler: mux, store: store}, nil
+	return &App{Handler: mux, store: store, debugFile: debugFile}, nil
 }
 
-// Close closes the store.
+// defaultWorkspaceStore gives new conversations without a workspace the
+// configured default. The engine uses the unwrapped store.
+type defaultWorkspaceStore struct {
+	chat.Store
+	workspace string
+}
+
+func (s defaultWorkspaceStore) CreateConversation(ctx context.Context, c chat.Conversation) (chat.Conversation, error) {
+	if c.Workspace == "" {
+		c.Workspace = s.workspace
+	}
+	return s.Store.CreateConversation(ctx, c)
+}
+
+// Close closes the store and the debug stream log, if any.
 func (a *App) Close() error {
-	return a.store.Close()
+	err := a.store.Close()
+	if a.debugFile != nil {
+		if cerr := a.debugFile.Close(); err == nil {
+			err = cerr
+		}
+	}
+	return err
 }

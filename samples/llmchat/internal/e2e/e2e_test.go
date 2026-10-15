@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"llmchat/internal/app"
+	"llmchat/internal/apptest"
 	"llmchat/internal/chat"
 )
 
@@ -150,14 +151,7 @@ func (f *fakeRouter) last(t *testing.T) routerRequest {
 // closes the returned app (and the server) to simulate a restart.
 func start(t *testing.T, dbPath, routerURL string) (*app.App, *httptest.Server) {
 	t.Helper()
-	a, err := app.New(app.Config{
-		Addr:      "127.0.0.1:0",
-		DBPath:    dbPath,
-		RouterURL: routerURL,
-	})
-	if err != nil {
-		t.Fatalf("app.New: %v", err)
-	}
+	a := apptest.New(t, routerURL, dbPath)
 	srv := httptest.NewServer(a.Handler)
 	t.Cleanup(func() {
 		srv.Close()
@@ -308,8 +302,14 @@ func TestServerEndToEnd(t *testing.T) {
 	if req.Model != "auto" || !req.Stream || req.HasTools {
 		t.Fatalf("router request model=%q stream=%v tools=%v, want auto, true, false", req.Model, req.Stream, req.HasTools)
 	}
-	if len(req.Messages) != 1 || req.Messages[0].Role != chat.RoleUser || req.Messages[0].Content != "hello world" {
-		t.Fatalf("router messages = %+v, want one user message %q", req.Messages, "hello world")
+	// The server sends the system prompt first (app.SystemPrompt, CHAT-17),
+	// then the one user message. Skip the leading system message and check the rest.
+	msgs := req.Messages
+	if len(msgs) > 0 && msgs[0].Role == chat.RoleSystem {
+		msgs = msgs[1:]
+	}
+	if len(msgs) != 1 || msgs[0].Role != chat.RoleUser || msgs[0].Content != "hello world" {
+		t.Fatalf("router messages = %+v, want system prompt then one user message %q", req.Messages, "hello world")
 	}
 
 	// 4. The stored conversation has both messages and the title.
@@ -349,10 +349,15 @@ func TestServerEndToEnd(t *testing.T) {
 		t.Fatalf("content = %q, want %q", got, "answer to: think about it")
 	}
 	req = router.last(t)
-	if len(req.Messages) != 3 ||
-		req.Messages[0].Role != chat.RoleUser || req.Messages[0].Content != "hello world" ||
-		req.Messages[1].Role != chat.RoleAssistant ||
-		req.Messages[2].Role != chat.RoleUser || req.Messages[2].Content != "think about it" {
+	// Same as the first turn: skip the leading system prompt (CHAT-17), then check the history.
+	msgs = req.Messages
+	if len(msgs) > 0 && msgs[0].Role == chat.RoleSystem {
+		msgs = msgs[1:]
+	}
+	if len(msgs) != 3 ||
+		msgs[0].Role != chat.RoleUser || msgs[0].Content != "hello world" ||
+		msgs[1].Role != chat.RoleAssistant ||
+		msgs[2].Role != chat.RoleUser || msgs[2].Content != "think about it" {
 		t.Fatalf("router messages = %+v, want user, assistant, then the new user message", req.Messages)
 	}
 	status, body = getConversation(t, base, conv.ID)

@@ -51,6 +51,9 @@ func TestIndexPage(t *testing.T) {
 		`id="model"`,
 		`id="new-chat"`,
 		`id="delete"`,
+		`id="workspace"`,
+		`id="set-workspace"`,
+		`.approval`,
 		`src="/app.js"`,
 	} {
 		if !strings.Contains(page, want) {
@@ -76,12 +79,22 @@ func TestAppScript(t *testing.T) {
 		"renderMarkdown",
 		"getReader",
 		"textContent",
+		"tool_call",
+		"approval",
+		"tool_result",
+		"/approvals/",
+		"tool_calls",
+		"tool_call_id",
+		"approve",
+		"deny",
+		"set-workspace",
+		"JSON.stringify",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js does not contain %q", want)
 		}
 	}
-	for _, banned := range []string{"eval(", "document.write"} {
+	for _, banned := range []string{"eval(", "document.write", "innerHTML = text"} {
 		if strings.Contains(script, banned) {
 			t.Errorf("app.js contains %q", banned)
 		}

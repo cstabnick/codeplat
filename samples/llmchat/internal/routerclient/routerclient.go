@@ -12,14 +12,37 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"llmchat/internal/chat"
 )
 
 // Client talks to an llmrouter server.
 type Client struct {
-	base string
-	hc   *http.Client
+	base  string
+	hc    *http.Client
+	debug *streamLog // nil unless WithDebugLog was called
+}
+
+// streamLog writes one JSON line per completion. The mutex keeps lines whole
+// when completions overlap.
+type streamLog struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// WithDebugLog returns a copy of c that writes one JSON line per completion
+// to w: the route, backend and model, each raw stream payload with its
+// finish_reason, and the sizes of the assembled message. A nil w returns c
+// unchanged, so completions write nothing.
+func (c *Client) WithDebugLog(w io.Writer) *Client {
+	if w == nil {
+		return c
+	}
+	cp := *c
+	cp.debug = &streamLog{w: w}
+	return &cp
 }
 
 var _ chat.Completer = (*Client)(nil)
@@ -35,9 +58,17 @@ func New(baseURL string, hc *http.Client) *Client {
 }
 
 // Complete implements chat.Completer.
-func (c *Client) Complete(ctx context.Context, req chat.CompletionRequest, emit func(chat.Event)) (chat.Message, error) {
+func (c *Client) Complete(ctx context.Context, req chat.CompletionRequest, emit func(chat.Event)) (msg chat.Message, err error) {
 	if emit == nil {
 		emit = func(chat.Event) {}
+	}
+	var rec *debugRecord
+	if c.debug != nil {
+		rec = &debugRecord{Time: time.Now().UTC().Format(time.RFC3339Nano), Chunks: []debugChunk{}}
+		defer func() {
+			rec.finish(msg, err)
+			c.debug.write(rec)
+		}()
 	}
 	body, err := requestBody(req)
 	if err != nil {
@@ -64,9 +95,9 @@ func (c *Client) Complete(ctx context.Context, req chat.CompletionRequest, emit 
 	model := h.Get("X-Llmrouter-Model")
 	emit(chat.Event{Type: chat.EventInfo, Route: route, Backend: backend, Model: model})
 
-	var s streamState
+	s := streamState{rec: rec}
 	streamErr := s.read(ctx, resp.Body, emit)
-	msg := chat.Message{
+	msg = chat.Message{
 		Role:      chat.RoleAssistant,
 		Content:   s.content.String(),
 		Reasoning: s.reasoning.String(),
@@ -200,7 +231,8 @@ func wireMessages(msgs []chat.Message) []map[string]any {
 // streamChunk is one "data:" payload of the router's stream.
 type streamChunk struct {
 	Choices []struct {
-		Delta struct {
+		FinishReason *string `json:"finish_reason"`
+		Delta        struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
 			ToolCalls        []struct {
@@ -215,11 +247,74 @@ type streamChunk struct {
 	} `json:"choices"`
 }
 
+// finishReason returns the first finish_reason the chunk carries, or nil.
+func (c streamChunk) finishReason() *string {
+	for _, ch := range c.Choices {
+		if ch.FinishReason != nil {
+			return ch.FinishReason
+		}
+	}
+	return nil
+}
+
 // streamState collects the assistant message as its stream is read.
 type streamState struct {
 	content   strings.Builder
 	reasoning strings.Builder
 	calls     map[int]*chat.ToolCall
+	rec       *debugRecord // nil when the debug log is off
+}
+
+// debugRecord is one line of the debug log: a single completion.
+type debugRecord struct {
+	Time            string       `json:"time"`
+	Route           string       `json:"route"`
+	Backend         string       `json:"backend"`
+	Model           string       `json:"model"`
+	Chunks          []debugChunk `json:"chunks"`
+	ContentLength   int          `json:"content_length"`
+	ReasoningLength int          `json:"reasoning_length"`
+	ToolCalls       int          `json:"tool_calls"`
+	Error           string       `json:"error,omitempty"`
+}
+
+// debugChunk is one raw "data:" payload, as received, with its finish_reason
+// (null when the chunk has none).
+type debugChunk struct {
+	Data         string  `json:"data"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+// addChunk appends a payload to the record. A nil record does nothing.
+func (r *debugRecord) addChunk(data string, finish *string) {
+	if r == nil {
+		return
+	}
+	r.Chunks = append(r.Chunks, debugChunk{Data: data, FinishReason: finish})
+}
+
+// finish fills the record's summary from the completion's result.
+func (r *debugRecord) finish(msg chat.Message, err error) {
+	r.Route, r.Backend, r.Model = msg.Route, msg.Backend, msg.Model
+	r.ContentLength = len(msg.Content)
+	r.ReasoningLength = len(msg.Reasoning)
+	r.ToolCalls = len(msg.ToolCalls)
+	if err != nil {
+		r.Error = err.Error()
+	}
+}
+
+// write appends the record as one JSON line. A failed write is ignored: the
+// log is a diagnostic and must not fail the completion.
+func (l *streamLog) write(r *debugRecord) {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return
+	}
+	b = append(b, '\n')
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.w.Write(b)
 }
 
 // read consumes the SSE body until [DONE] or the end of the body. A stream
@@ -255,10 +350,13 @@ func (s *streamState) read(ctx context.Context, body io.Reader, emit func(chat.E
 // apply handles one data payload and reports whether the stream is done.
 func (s *streamState) apply(data string, emit func(chat.Event)) (bool, error) {
 	if data == "[DONE]" {
+		s.rec.addChunk(data, nil)
 		return true, nil
 	}
 	var chunk streamChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+	err := json.Unmarshal([]byte(data), &chunk)
+	s.rec.addChunk(data, chunk.finishReason())
+	if err != nil {
 		return false, fmt.Errorf("decode router stream chunk: %w", err)
 	}
 	for _, ch := range chunk.Choices {

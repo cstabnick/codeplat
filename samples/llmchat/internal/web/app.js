@@ -13,6 +13,8 @@
   const newChatBtn = $("new-chat");
   const deleteBtn = $("delete");
   const titleEl = $("title");
+  const workspaceEl = $("workspace");
+  const setWorkspaceBtn = $("set-workspace");
 
   let conversations = [];
   let current = null; // the open conversation, or null
@@ -126,26 +128,149 @@
     };
   }
 
-  // messageBubble returns the element for a stored message, or null when the
-  // message is not shown.
-  function messageBubble(m) {
+  function userBubble(text) {
+    const el = document.createElement("div");
+    el.className = "msg user";
+    const content = document.createElement("div");
+    content.className = "content";
+    content.textContent = text;
+    el.appendChild(content);
+    return el;
+  }
+
+  // prettyArgs shows a tool call's JSON arguments indented, or the raw text
+  // when it is not JSON.
+  function prettyArgs(raw) {
+    const s = raw == null ? "" : String(raw);
+    try {
+      return JSON.stringify(JSON.parse(s), null, 2);
+    } catch (err) {
+      return s;
+    }
+  }
+
+  // addTool appends a collapsible block for one tool call to the log. Its
+  // result is filled in later by setResult.
+  function addTool(callID, name, rawArgs) {
+    const details = document.createElement("details");
+    details.className = "tool";
+    details.dataset.call = callID;
+    details.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = "\u{1F527} " + (name || "tool");
+    const args = document.createElement("pre");
+    args.className = "args";
+    args.textContent = prettyArgs(rawArgs);
+    const result = document.createElement("pre");
+    result.className = "result";
+    details.append(summary, args, result);
+    logEl.appendChild(details);
+    keepScrolled();
+    return details;
+  }
+
+  // ensureTool returns the block for a call, creating it when the event for
+  // the call was not seen.
+  function ensureTool(calls, ev) {
+    const id = String(ev.call_id || "");
+    if (!calls[id]) calls[id] = addTool(id, ev.name, ev.arguments);
+    return calls[id];
+  }
+
+  function setResult(block, text) {
+    block.querySelector("pre.result").textContent = String(text == null ? "" : text);
+    const pending = block.querySelector(".approval");
+    if (pending) pending.remove();
+  }
+
+  // approvalQuestion words the question for a call that needs approval. A
+  // bash command and a file change show what they will do.
+  function approvalQuestion(name, rawArgs) {
+    let args = {};
+    try {
+      args = JSON.parse(String(rawArgs || "")) || {};
+    } catch (err) {
+      args = {};
+    }
+    if (name === "bash" && args.command != null) return "Run command: " + args.command;
+    if ((name === "write_file" || name === "edit_file") && args.path != null) {
+      return "Change " + args.path + "?";
+    }
+    return "Run " + (name || "tool") + "?";
+  }
+
+  // addApproval puts Approve and Deny buttons in a call's block. The answer
+  // goes to the approvals endpoint; a failed answer shows its error and
+  // re-enables the buttons.
+  function addApproval(block, conversationID, ev) {
+    const box = document.createElement("div");
+    box.className = "approval";
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.className = "approve";
+    approve.textContent = "Approve";
+    const deny = document.createElement("button");
+    deny.type = "button";
+    deny.className = "deny";
+    deny.textContent = "Deny";
+    box.append(approvalQuestion(ev.name, ev.arguments) + " ", approve, deny);
+    block.appendChild(box);
+    keepScrolled();
+
+    async function decide(ok) {
+      approve.disabled = true;
+      deny.disabled = true;
+      try {
+        await request(
+          "POST",
+          conversationURL(conversationID) + "/approvals/" + encodeURIComponent(String(ev.call_id || "")),
+          { approve: ok }
+        );
+        box.classList.add("done");
+        box.textContent = ok ? "Approved" : "Denied";
+      } catch (err) {
+        approve.disabled = false;
+        deny.disabled = false;
+        showError(err.message);
+      }
+    }
+    approve.addEventListener("click", function () {
+      decide(true);
+    });
+    deny.addEventListener("click", function () {
+      decide(false);
+    });
+  }
+
+  // appendMessage shows one stored message at the end of the log. A tool
+  // call's block follows its message; a tool result fills that block.
+  function appendMessage(m, calls) {
     if (m.role === "user") {
-      const el = document.createElement("div");
-      el.className = "msg user";
-      const content = document.createElement("div");
-      content.className = "content";
-      content.textContent = m.content;
-      el.appendChild(content);
-      return el;
+      logEl.appendChild(userBubble(m.content));
+      return;
     }
-    if (m.role === "assistant" && m.content) {
-      const bubble = newAssistant();
-      if (m.reasoning) bubble.setReasoning(m.reasoning);
-      bubble.setContent(m.content);
-      bubble.setMeta(metaText({ route: m.route, backend: m.backend, model: m.model }));
-      return bubble.el;
+    if (m.role === "assistant") {
+      if (m.content) {
+        const bubble = newAssistant();
+        if (m.reasoning) bubble.setReasoning(m.reasoning);
+        bubble.setContent(m.content);
+        bubble.setMeta(metaText({ route: m.route, backend: m.backend, model: m.model }));
+        logEl.appendChild(bubble.el);
+      }
+      for (const c of m.tool_calls || []) {
+        calls[c.id] = addTool(c.id, c.name, c.arguments);
+      }
+      return;
     }
-    return null;
+    if (m.role === "tool") {
+      const block = calls[m.tool_call_id];
+      if (block) setResult(block, m.content);
+    }
+  }
+
+  // showWorkspace fills the workspace field from a conversation.
+  function showWorkspace(conv) {
+    workspaceEl.value = conv.workspace || "";
   }
 
   function renderSidebar() {
@@ -218,11 +343,10 @@
     titleEl.textContent = current.title || "New chat";
     ensureModelOption(current.model);
     modelEl.value = current.model;
+    showWorkspace(current);
     logEl.textContent = "";
-    for (const m of data.messages || []) {
-      const bubble = messageBubble(m);
-      if (bubble) logEl.appendChild(bubble);
-    }
+    const calls = {};
+    for (const m of data.messages || []) appendMessage(m, calls);
     renderSidebar();
     stick = true;
     keepScrolled(true);
@@ -240,10 +364,14 @@
     setBusy(true);
     try {
       if (!current) {
-        const conv = await request("POST", "/api/conversations", { model: modelEl.value });
+        const conv = await request("POST", "/api/conversations", {
+          model: modelEl.value,
+          workspace: workspaceEl.value.trim()
+        });
         conversations.unshift(conv);
         current = conv;
         titleEl.textContent = "New chat";
+        showWorkspace(conv);
         renderSidebar();
       }
     } catch (err) {
@@ -254,16 +382,29 @@
 
     const id = current.id;
     stick = true;
-    logEl.appendChild(messageBubble({ role: "user", content: text }));
+    logEl.appendChild(userBubble(text));
     promptEl.value = "";
-    const bubble = newAssistant();
+    let bubble = newAssistant();
     logEl.appendChild(bubble.el);
     keepScrolled(true);
 
-    let info = null;
+    // Each model step starts with an info event. The first one uses the
+    // bubble above; each later one closes the current bubble and opens a
+    // new one after the tool blocks.
+    let started = false;
+    let bubbleInfo = null; // the info that started the current bubble
     let content = "";
     let reasoning = "";
     let finished = false;
+    const calls = {}; // call id -> tool block
+
+    function startBubble() {
+      bubble.setMeta(metaText(bubbleInfo));
+      bubble = newAssistant();
+      logEl.appendChild(bubble.el);
+      content = "";
+      reasoning = "";
+    }
 
     function handleLine(line) {
       if (line.endsWith("\r")) line = line.slice(0, -1);
@@ -277,7 +418,9 @@
       if (!ev || typeof ev !== "object") return;
       switch (ev.type) {
         case "info":
-          info = { route: ev.route || "", backend: ev.backend || "", model: ev.model || "" };
+          if (started) startBubble();
+          started = true;
+          bubbleInfo = { route: ev.route || "", backend: ev.backend || "", model: ev.model || "" };
           break;
         case "content":
           content += String(ev.text == null ? "" : ev.text);
@@ -288,6 +431,15 @@
           reasoning += String(ev.text == null ? "" : ev.text);
           bubble.setReasoning(reasoning);
           keepScrolled();
+          break;
+        case "tool_call":
+          calls[String(ev.call_id || "")] = addTool(String(ev.call_id || ""), ev.name, ev.arguments);
+          break;
+        case "approval":
+          addApproval(ensureTool(calls, ev), id, ev);
+          break;
+        case "tool_result":
+          setResult(ensureTool(calls, ev), ev.text);
           break;
         case "error":
           showError(String(ev.error || "unknown error"));
@@ -337,7 +489,7 @@
       bubble.el.classList.add("err");
       bubble.content.textContent = "Error: " + err.message;
     } finally {
-      bubble.setMeta(metaText(info));
+      bubble.setMeta(metaText(bubbleInfo));
       setBusy(false);
       promptEl.focus();
       keepScrolled(true);
@@ -366,7 +518,10 @@
 
   newChatBtn.addEventListener("click", async function () {
     try {
-      const conv = await request("POST", "/api/conversations", { model: modelEl.value });
+      const conv = await request("POST", "/api/conversations", {
+        model: modelEl.value,
+        workspace: workspaceEl.value.trim()
+      });
       conversations.unshift(conv);
       renderSidebar();
       await openConversation(conv.id);
@@ -384,6 +539,18 @@
     } catch (err) {
       showError(err.message);
       if (current && current.id === id) modelEl.value = current.model;
+    }
+  });
+
+  setWorkspaceBtn.addEventListener("click", async function () {
+    if (!current) return;
+    const id = current.id;
+    try {
+      const conv = await request("PATCH", conversationURL(id), { workspace: workspaceEl.value.trim() });
+      replaceConversation(conv);
+      if (current && current.id === id) showWorkspace(conv);
+    } catch (err) {
+      showError(err.message);
     }
   });
 
@@ -407,6 +574,7 @@
       renderSidebar();
       logEl.textContent = "";
       titleEl.textContent = "";
+      workspaceEl.value = "";
     }
   });
 

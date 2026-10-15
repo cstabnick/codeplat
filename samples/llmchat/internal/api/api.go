@@ -89,13 +89,15 @@ func (a *Approvals) Resolve(conversationID, callID string, approve bool) error {
 	return nil
 }
 
-// NewHandler serves the API. routes lists the router's route names.
-func NewHandler(store chat.Store, runner Runner, approvals *Approvals, routes func(ctx context.Context) ([]string, error)) http.Handler {
+// NewHandler serves the API. routes lists the router's route names; logger
+// receives the errors the API cannot return to a client.
+func NewHandler(store chat.Store, runner Runner, approvals *Approvals, routes func(ctx context.Context) ([]string, error), logger *log.Logger) http.Handler {
 	h := &handler{
 		store:     store,
 		runner:    runner,
 		approvals: approvals,
 		routes:    routes,
+		log:       logger,
 		busy:      make(map[string]bool),
 	}
 	mux := http.NewServeMux()
@@ -116,6 +118,7 @@ type handler struct {
 	runner    Runner
 	approvals *Approvals
 	routes    func(ctx context.Context) ([]string, error)
+	log       *log.Logger
 
 	mu   sync.Mutex
 	busy map[string]bool // conversation IDs with a turn running
@@ -132,20 +135,20 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 }
 
 // badBody answers a body that could not be decoded.
-func badBody(w http.ResponseWriter, err error) {
-	writeError(w, fmt.Errorf("bad request body: %v: %w", err, chat.ErrInvalid))
+func (h *handler) badBody(w http.ResponseWriter, err error) {
+	h.writeError(w, fmt.Errorf("bad request body: %v: %w", err, chat.ErrInvalid))
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func (h *handler) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("api: write response: %v", err)
+		h.log.Printf("api: write response: %v", err)
 	}
 }
 
 // writeError maps err to a status code and writes it as {"error": "..."}.
-func writeError(w http.ResponseWriter, err error) {
+func (h *handler) writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	msg := err.Error()
 	switch {
@@ -154,39 +157,39 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, chat.ErrNotFound):
 		status = http.StatusNotFound
 	default:
-		log.Printf("api: %v", err)
+		h.log.Printf("api: %v", err)
 		msg = "internal error"
 	}
-	writeJSON(w, status, map[string]string{"error": msg})
+	h.writeJSON(w, status, map[string]string{"error": msg})
 }
 
 func (h *handler) healthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *handler) listRoutes(w http.ResponseWriter, r *http.Request) {
 	names, err := h.routes(r.Context())
 	if err != nil {
-		log.Printf("api: list routes: %v", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		h.log.Printf("api: list routes: %v", err)
+		h.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 	if names == nil {
 		names = []string{}
 	}
-	writeJSON(w, http.StatusOK, names)
+	h.writeJSON(w, http.StatusOK, names)
 }
 
 func (h *handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	list, err := h.store.ListConversations(r.Context())
 	if err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	if list == nil {
 		list = []chat.Conversation{}
 	}
-	writeJSON(w, http.StatusOK, list)
+	h.writeJSON(w, http.StatusOK, list)
 }
 
 func (h *handler) createConversation(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +200,7 @@ func (h *handler) createConversation(w http.ResponseWriter, r *http.Request) {
 	}
 	// An empty body means every field takes its default.
 	if err := decode(w, r, &body); err != nil && !errors.Is(err, io.EOF) {
-		badBody(w, err)
+		h.badBody(w, err)
 		return
 	}
 	c, err := h.store.CreateConversation(r.Context(), chat.Conversation{
@@ -206,28 +209,28 @@ func (h *handler) createConversation(w http.ResponseWriter, r *http.Request) {
 		Workspace: body.Workspace,
 	})
 	if err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, c)
+	h.writeJSON(w, http.StatusCreated, c)
 }
 
 func (h *handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	c, err := h.store.GetConversation(r.Context(), id)
 	if err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	msgs, err := h.store.ListMessages(r.Context(), id)
 	if err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	if msgs == nil {
 		msgs = []chat.Message{}
 	}
-	writeJSON(w, http.StatusOK, struct {
+	h.writeJSON(w, http.StatusOK, struct {
 		Conversation chat.Conversation `json:"conversation"`
 		Messages     []chat.Message    `json:"messages"`
 	}{c, msgs})
@@ -236,20 +239,20 @@ func (h *handler) getConversation(w http.ResponseWriter, r *http.Request) {
 func (h *handler) updateConversation(w http.ResponseWriter, r *http.Request) {
 	var p chat.ConversationPatch
 	if err := decode(w, r, &p); err != nil {
-		badBody(w, err)
+		h.badBody(w, err)
 		return
 	}
 	c, err := h.store.UpdateConversation(r.Context(), r.PathValue("id"), p)
 	if err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, c)
+	h.writeJSON(w, http.StatusOK, c)
 }
 
 func (h *handler) deleteConversation(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.DeleteConversation(r.Context(), r.PathValue("id")); err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -279,20 +282,20 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		Text string `json:"text"`
 	}
 	if err := decode(w, r, &body); err != nil {
-		badBody(w, err)
+		h.badBody(w, err)
 		return
 	}
 	if _, err := h.store.GetConversation(r.Context(), id); err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	text := strings.TrimSpace(body.Text)
 	if text == "" {
-		writeError(w, fmt.Errorf("text is empty: %w", chat.ErrInvalid))
+		h.writeError(w, fmt.Errorf("text is empty: %w", chat.ErrInvalid))
 		return
 	}
 	if !h.startTurn(id) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a turn is already running for this conversation"})
+		h.writeJSON(w, http.StatusConflict, map[string]string{"error": "a turn is already running for this conversation"})
 		return
 	}
 	defer h.endTurn(id)
@@ -317,19 +320,19 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		data, err := json.Marshal(ev)
 		if err != nil {
-			log.Printf("api: marshal event: %v", err)
+			h.log.Printf("api: marshal event: %v", err)
 			return
 		}
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 			return // the client went away; the request context ends the turn
 		}
 		if err := rc.Flush(); err != nil {
-			log.Printf("api: flush event: %v", err)
+			h.log.Printf("api: flush event: %v", err)
 		}
 	}
 
 	if err := h.runner.Run(r.Context(), id, text, emit); err != nil {
-		log.Printf("api: turn in conversation %s: %v", id, err)
+		h.log.Printf("api: turn in conversation %s: %v", id, err)
 		emit(chat.Event{Type: chat.EventError, Error: err.Error()})
 		emit(chat.Event{Type: chat.EventDone})
 	}
@@ -344,11 +347,11 @@ func (h *handler) answerApproval(w http.ResponseWriter, r *http.Request) {
 		Approve bool `json:"approve"`
 	}
 	if err := decode(w, r, &body); err != nil {
-		badBody(w, err)
+		h.badBody(w, err)
 		return
 	}
 	if err := h.approvals.Resolve(r.PathValue("id"), r.PathValue("call"), body.Approve); err != nil {
-		writeError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -154,7 +155,7 @@ func newTestServer(t *testing.T, store chat.Store, runner Runner, approvals *App
 	if routes == nil {
 		routes = func(context.Context) ([]string, error) { return []string{"auto", "fast"}, nil }
 	}
-	srv := httptest.NewServer(NewHandler(store, runner, approvals, routes))
+	srv := httptest.NewServer(NewHandler(store, runner, approvals, routes, log.New(io.Discard, "", 0)))
 	t.Cleanup(srv.Close)
 	return srv
 }

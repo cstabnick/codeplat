@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"llmchat/internal/app"
+	"llmchat/internal/apptest"
 	"llmchat/internal/chat"
 )
 
@@ -38,16 +38,8 @@ func routerURL() string {
 // startApp builds the real app against the router and serves it over HTTP.
 func startApp(t *testing.T, router string) *httptest.Server {
 	t.Helper()
-	a, err := app.New(app.Config{
-		Addr:      "127.0.0.1:0",
-		DBPath:    filepath.Join(t.TempDir(), "chat.db"),
-		RouterURL: router,
-	})
-	if err != nil {
-		t.Fatalf("app.New: %v", err)
-	}
+	a := apptest.New(t, router, filepath.Join(t.TempDir(), "chat.db"))
 	srv := httptest.NewServer(a.Handler)
-	t.Cleanup(func() { a.Close() })
 	t.Cleanup(srv.Close)
 	return srv
 }

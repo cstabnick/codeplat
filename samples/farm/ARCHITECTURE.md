@@ -2,6 +2,8 @@
 
 These rules are binding for every change under `samples/farm/`.
 
+In the sections below, a bare module name such as `state.js` or `main.js` is in `web/js/`, and `index.html` is in `web/`.
+
 ## Shape
 
 - A static Go server (`cmd/farm`, `web`) serves `index.html` and the scripts in `web/js`. It has no state and no API.

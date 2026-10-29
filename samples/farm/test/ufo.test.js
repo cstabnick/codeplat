@@ -114,7 +114,7 @@ test('ufoDrawables is empty when away and draws the saucer and beam without thro
   summonUfo(w, rng);
   let items = ufoDrawables(w);
   assert.equal(items.length, 1, 'one item while arriving');
-  assert.equal(items[0].y, 0);
+  assert.equal(items[0].y, Infinity);
 
   for (let i = 0; i < 200 && w.ufo.state !== 'beam'; i++) step(w, rng);
   assert.equal(w.ufo.state, 'beam');
@@ -122,7 +122,7 @@ test('ufoDrawables is empty when away and draws the saucer and beam without thro
   items = ufoDrawables(w);
   assert.equal(items.length, 2, 'saucer and beam while beaming');
   const cow = w.animals.find((a) => a.id === w.ufo.targetId);
-  assert.equal(items[0].y, 0, 'the saucer sorts first');
+  assert.equal(items[0].y, Infinity, 'the saucer sorts last, in front of the ground');
   assert.equal(items[1].y, cow.y - 1, 'the beam sits just behind the cow');
 
   const ctx = fakeCtx();

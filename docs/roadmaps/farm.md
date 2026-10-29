@@ -804,8 +804,8 @@ export function updateUfo(world, dt, rng, line)
 export function summonUfo(world, rng)
 
 // ufoDrawables returns [] when state is 'away'. Otherwise two items:
-// - the saucer: y = 0 (it is always behind everything on the ground... it is in the sky, but draw
-//   order puts it first), drawn with drawSprite centred on (x, y), its row of lights alternating
+// - the saucer: y = Infinity (it flies in front of everything on the ground, so it sorts last),
+//   drawn with drawSprite centred on (x, y), its row of lights alternating
 //   'a' and '8' every 0.25 s of world.time;
 // - while 'beam', 'hold' or 'return': the beam, y = cow.y - 1 (just behind the cow): a trapezoid of
 //   1-unit rows from the saucer's bottom (6 wide) down to the cow's feet (24 wide), filled

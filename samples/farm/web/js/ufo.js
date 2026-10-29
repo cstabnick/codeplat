@@ -167,7 +167,8 @@ export function summonUfo(world, rng) {
 export function ufoDrawables(world) {
   const ufo = world.ufo;
   if (ufo.state === 'away') return [];
-  const items = [{ y: 0, draw: (ctx) => drawSaucer(ctx, world) }];
+  // The saucer flies in front of everything on the ground, so it sorts after all of it.
+  const items = [{ y: Infinity, draw: (ctx) => drawSaucer(ctx, world) }];
   if (ufo.state === 'beam' || ufo.state === 'hold' || ufo.state === 'return') {
     const cow = cowOf(world);
     if (cow) items.push({ y: cow.y - 1, draw: (ctx) => drawBeam(ctx, world, cow) });

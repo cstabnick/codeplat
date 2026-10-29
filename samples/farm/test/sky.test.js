@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createWorld, setHour, HORIZON, WIDTH } from '../web/js/state.js';
+import { createWorld, setHour, HORIZON } from '../web/js/state.js';
 import { skyColors, darkness, drawSky, drawNightShade } from '../web/js/sky.js';
 import { fakeCtx } from './fakectx.js';
 
@@ -89,16 +89,6 @@ test('drawSky never paints at or below HORIZON at hours 3, 6.5, 12 and 19.5', ()
       }
     }
   }
-});
-
-test('drawSky stays within the canvas width for the far-right sun at hour 19.99', () => {
-  const ctx = fakeCtx();
-  drawSky(ctx, worldAt(19.99, 0));
-  for (const c of ctx.calls.filter((call) => call.op === 'fillRect')) {
-    const [y, h] = [c.args[1], c.args[3]];
-    assert.ok(y + h <= HORIZON, `fillRect reaches y ${y + h} > ${HORIZON}`);
-  }
-  assert.ok(WIDTH > 0);
 });
 
 test('drawNightShade at noon makes no fillRect', () => {

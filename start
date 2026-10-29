@@ -27,6 +27,7 @@ services=(
   "chess|samples/chess|$bin/chess|8086|chess"
   "bookmarks-api|samples/bookmarks|$bin/bookmarks-api|8081|bookmarks API"
   "bookmarks-ui|samples/bookmarks|$bin/bookmarks-ui|8082|bookmarks UI"
+  "farm|samples/farm|$bin/farm|8088|Gossip Acres farm sim"
   "runner|.|$bin/codeplat-runner|-|worker runner (opt-in: --runner)"
 )
 
@@ -60,7 +61,7 @@ if ((build)); then
   echo "building..."
   make -s -C "$root" build || exit 1
   for b in "llmrouter:llmrouter" "llmchat:llmchat" "sandbox:sandbox-server" "decide:decide-server" \
-           "chess:chess" "bookmarks:api:bookmarks-api" "bookmarks:ui:bookmarks-ui"; do
+           "chess:chess" "farm:farm" "bookmarks:api:bookmarks-api" "bookmarks:ui:bookmarks-ui"; do
     IFS=: read -r dir a b2 <<<"$b"
     cmd="$a" out="${b2:-$a}"
     (cd "$root/samples/$dir" && go build -o "$bin/$out" "./cmd/$cmd") || exit 1

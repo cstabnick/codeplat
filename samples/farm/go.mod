@@ -1,0 +1,2 @@
+module farm
+go 1.27.2

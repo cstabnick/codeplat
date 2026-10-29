@@ -1,0 +1,198 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  createWorld,
+  advanceTime,
+  hourOf,
+  isNight,
+  setHour,
+  farmerSees,
+  say,
+  logEvent,
+  puff,
+  DAY_LENGTH,
+} from '../web/js/state.js';
+import { fakeCtx } from './fakectx.js';
+
+const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
+
+test('createWorld is deterministic for a seed', () => {
+  assert.deepEqual(createWorld(42), createWorld(42));
+});
+
+test('createWorld has the animals, plots and clock from the contract', () => {
+  const w = createWorld(1);
+  assert.equal(w.animals.filter((a) => a.kind === 'cow').length, 4);
+  assert.equal(w.animals.filter((a) => a.kind === 'chicken').length, 5);
+  assert.equal(w.animals.filter((a) => a.kind === 'pig').length, 1);
+  assert.equal(w.animals.length, 10);
+
+  const daisy = w.animals.find((a) => a.id === 'cow-1');
+  assert.deepEqual(
+    { name: daisy.name, x: daisy.x, y: daisy.y, facing: daisy.facing, state: daisy.state },
+    { name: 'Daisy', x: 200, y: 122, facing: 'right', state: 'graze' },
+  );
+  for (const a of w.animals) {
+    assert.equal(a.target, null);
+    assert.equal(a.timer, 1);
+    assert.equal(a.frame, 0);
+    assert.equal(a.partner, null);
+    assert.equal(a.noticed, 0);
+    assert.equal(a.lift, 0);
+    assert.equal(a.abducted, false);
+  }
+
+  assert.equal(w.plots.length, 18);
+  for (const p of w.plots) {
+    assert.equal(p.crop, ['carrot', 'corn', 'pumpkin'][p.col % 3]);
+    assert.equal(p.water, 0.5);
+    const growth = ((p.col * 7 + p.row * 3) % 10) / 10;
+    assert.equal(p.growth, growth);
+    assert.equal(p.stage, growth >= 1 ? 3 : Math.floor(growth * 3));
+  }
+  // row-major: first plot is (0,0); (1,0) has growth 0.7, stage 2, corn.
+  assert.deepEqual(w.plots[0], { col: 0, row: 0, crop: 'carrot', growth: 0, stage: 0, water: 0.5 });
+  assert.deepEqual(w.plots[1], { col: 1, row: 0, crop: 'corn', growth: 0.7, stage: 2, water: 0.5 });
+  assert.equal(w.plots[6].row, 1);
+  assert.equal(w.plots[6].col, 0);
+
+  assert.equal(w.time, 0);
+  assert.equal(w.day, 1);
+  assert.equal(w.clock, 0);
+  assert.deepEqual(w.stats, { cigarettes: 0, gossip: 0, harvests: 0, abductions: 0 });
+  assert.deepEqual(w.log, []);
+  assert.deepEqual(w.bubbles, []);
+  assert.deepEqual(w.effects, []);
+  assert.equal(w.ufo.state, 'away');
+});
+
+test('advanceTime and hourOf: clock 0 is hour 6, and day and hour roll over', () => {
+  const w = createWorld(1);
+  near(hourOf(w), 6);
+  advanceTime(w, DAY_LENGTH * 1.5);
+  assert.equal(w.day, 2);
+  near(hourOf(w), 18);
+});
+
+test('isNight is true at hours 22, 3 and false at 12', () => {
+  const w = createWorld(1);
+  setHour(w, 22);
+  assert.equal(isNight(w), true);
+  setHour(w, 3);
+  assert.equal(isNight(w), true);
+  setHour(w, 12);
+  assert.equal(isNight(w), false);
+});
+
+test('setHour(21) from hour 10 keeps the day', () => {
+  const w = createWorld(1);
+  advanceTime(w, 4 * (DAY_LENGTH / 24)); // hour 10
+  near(hourOf(w), 10);
+  setHour(w, 21);
+  assert.equal(w.day, 1);
+  near(hourOf(w), 21);
+});
+
+test('setHour(6) from hour 22 advances the day', () => {
+  const w = createWorld(1);
+  advanceTime(w, 16 * (DAY_LENGTH / 24)); // hour 22
+  near(hourOf(w), 22);
+  setHour(w, 6);
+  assert.equal(w.day, 2);
+  near(hourOf(w), 6);
+});
+
+test('farmerSees respects facing, range, hidden and smoking', () => {
+  const w = createWorld(1);
+  // farmer at (38, 84), facing right
+  assert.equal(w.farmer.x, 38);
+  assert.equal(w.farmer.y, 84);
+  assert.equal(farmerSees(w, 50, 84), true, 'ahead, in range');
+  assert.equal(farmerSees(w, 20, 84), false, 'behind him, facing right');
+  assert.equal(farmerSees(w, 38 + 141, 84), false, 'out of range');
+  assert.equal(farmerSees(w, 38 + 140, 84), true, 'range is inclusive');
+
+  w.farmer.facing = 'left';
+  assert.equal(farmerSees(w, 30, 84), true, 'ahead when facing left');
+  assert.equal(farmerSees(w, 50, 84), false, 'behind him when facing left');
+
+  w.farmer.facing = 'right';
+  w.farmer.hidden = true;
+  assert.equal(farmerSees(w, 50, 84), false, 'hidden');
+  w.farmer.hidden = false;
+  w.farmer.state = 'smoke';
+  assert.equal(farmerSees(w, 50, 84), false, 'smoking');
+  w.farmer.state = 'sleep';
+  assert.equal(farmerSees(w, 50, 84), false, 'sleeping');
+  w.farmer.state = 'idle';
+  assert.equal(farmerSees(w, 50, 84), true, 'idle again');
+});
+
+test('say replaces a nearby bubble and caps at 8', () => {
+  const w = createWorld(1);
+  say(w, 10, 10, 'a');
+  say(w, 13, 12, 'b');
+  assert.equal(w.bubbles.length, 1);
+  assert.equal(w.bubbles[0].text, 'b');
+  assert.deepEqual(w.bubbles[0], { x: 13, y: 12, text: 'b', kind: 'speech', ttl: 3 });
+
+  say(w, 40, 10, 'far');
+  assert.equal(w.bubbles.length, 2, 'a bubble 27 px away is not replaced');
+
+  const v = createWorld(2);
+  for (let i = 0; i < 10; i++) say(v, i * 20, 10, `t${i}`);
+  assert.equal(v.bubbles.length, 8);
+  assert.equal(v.bubbles[0].text, 't2', 'oldest dropped first');
+  assert.equal(v.bubbles[7].text, 't9');
+
+  say(v, 500, 500, 'th', 'thought', 2);
+  assert.equal(v.bubbles.at(-1).kind, 'thought');
+  assert.equal(v.bubbles.at(-1).ttl, 2);
+});
+
+test('logEvent keeps the newest 5 first', () => {
+  const w = createWorld(1);
+  for (let i = 1; i <= 7; i++) logEvent(w, `e${i}`);
+  assert.equal(w.log.length, 5);
+  assert.equal(w.log[0].text, 'e7');
+  assert.equal(w.log[4].text, 'e3');
+  assert.deepEqual(w.log[0], { day: 1, hour: 6, text: 'e7' });
+});
+
+test('puff adds an effect with defaults and caps at 120', () => {
+  const w = createWorld(1);
+  puff(w, 'smoke', 1, 2);
+  assert.deepEqual(w.effects[0], { kind: 'smoke', x: 1, y: 2, vx: 0, vy: -6, ttl: 1.5, age: 0 });
+
+  const v = createWorld(1);
+  for (let i = 0; i < 125; i++) puff(v, 'coin', i, 0);
+  assert.equal(v.effects.length, 120);
+  assert.equal(v.effects[0].x, 5, 'oldest five dropped');
+  assert.equal(v.effects[119].x, 124);
+});
+
+test('fakeCtx records method calls and property sets and counts them', () => {
+  const ctx = fakeCtx();
+  ctx.fillRect(1, 2, 3, 4);
+  assert.deepEqual(ctx.calls[0], { op: 'fillRect', args: [1, 2, 3, 4] });
+  assert.equal(ctx.count('fillRect'), 1);
+
+  ctx.fillStyle = 'red';
+  assert.equal(ctx.fillStyle, 'red');
+  assert.deepEqual(ctx.calls[1], { op: 'set', name: 'fillStyle', value: 'red' });
+  assert.equal(ctx.count('set'), 1);
+
+  ctx.fillStyle = 'blue';
+  assert.equal(ctx.fillStyle, 'blue', 'last value wins');
+  assert.equal(ctx.count('set'), 2);
+
+  assert.deepEqual(ctx.canvas, { width: 320, height: 180 });
+  assert.deepEqual(ctx.measureText('hi'), { width: 0 });
+  assert.doesNotThrow(() => ctx.createLinearGradient(0, 0, 1, 1).addColorStop(0, 'red'));
+  assert.doesNotThrow(() => ctx.createRadialGradient(0, 0, 1, 0, 0, 2).addColorStop(0, 'red'));
+
+  const before = ctx.calls.length;
+  ctx.count('fillRect');
+  assert.equal(ctx.calls.length, before, 'count itself is not recorded');
+  assert.equal(ctx.count('nothing'), 0);
+});

@@ -266,7 +266,7 @@ function startPanic(world, a, rng, line) {
   a.state = 'panic';
   a.timer = 3;
   a.partner = null;
-  a.target = randomNear(rng, a.x, a.y, 20, YARD);
+  a.target = randomNear(rng, a.x, a.y, 20, CHICKEN_BOX);
   bubble(world, a, line('chicken'), 'speech');
 }
 
@@ -278,7 +278,7 @@ function updatePanic(world, a, dt, rng) {
   const after = before - dt;
   const prevBeat = Math.floor(Math.max(0, 3 - before) / 0.3);
   const newBeat = Math.floor(Math.min(3, 3 - Math.max(after, 0)) / 0.3);
-  if (newBeat > prevBeat) a.target = randomNear(rng, a.x, a.y, 20, YARD);
+  if (newBeat > prevBeat) a.target = randomNear(rng, a.x, a.y, 20, CHICKEN_BOX);
   if (a.target) stepToward(a, a.target.x, a.target.y, 40, dt);
 
   for (const o of world.animals) {
@@ -287,7 +287,7 @@ function updatePanic(world, a, dt, rng) {
       o.state = 'panic';
       o.timer = 3;
       o.partner = null;
-      o.target = randomNear(rng, o.x, o.y, 20, YARD);
+      o.target = randomNear(rng, o.x, o.y, 20, CHICKEN_BOX);
     }
   }
 

@@ -89,6 +89,7 @@ function arrive(ufo, cow, dt) {
     ufo.y = ty;
     ufo.state = 'beam';
     ufo.timer = BEAM_TIME;
+    holdCow(cow);
   } else {
     ufo.x += (dx / dist) * step;
     ufo.y += (dy / dist) * step;

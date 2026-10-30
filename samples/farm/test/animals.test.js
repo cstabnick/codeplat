@@ -6,9 +6,6 @@ import {
   createWorld,
   advanceTime,
   setHour,
-  isAdult,
-  herdSize,
-  capacity,
   PASTURE,
   YARD,
   MUD,
@@ -29,11 +26,29 @@ function step(w, rng) {
 const byId = (w, id) => w.animals.find((a) => a.id === id);
 const cows = (w) => w.animals.filter((a) => a.kind === 'cow');
 
+// countWhere counts the animals of a kind that satisfy pred.
+function countWhere(w, kind, pred) {
+  return w.animals.filter((a) => a.kind === kind && pred(a)).length;
+}
+// adultMales, adultFemales and young count the scene's animals of a kind in each group. An
+// animal with no sex counts as a female.
+const adultMales = (w, kind) => countWhere(w, kind, (a) => !a.young && a.sex === 'male');
+const adultFemales = (w, kind) => countWhere(w, kind, (a) => !a.young && a.sex !== 'male');
+const young = (w, kind) => countWhere(w, kind, (a) => a.young);
+
 // bubblesAdded returns the bubbles in w.bubbles that are not in seen, and adds them to seen.
 function newBubbles(w, seen) {
   const fresh = w.bubbles.filter((b) => !seen.has(b));
   for (const b of fresh) seen.add(b);
   return fresh;
+}
+
+// holdCows keeps every cow in 'innocent' so no gossip starts and logs its own entry during a test.
+function holdCows(w) {
+  for (const c of cows(w)) {
+    c.state = 'innocent';
+    c.timer = 1000;
+  }
 }
 
 test('gossip: cows whisper while hidden, then go innocent when Gary looks', () => {
@@ -176,256 +191,182 @@ test('drawing: every drawable draws without throwing, day and night', () => {
   }
 });
 
-// Life cycle: aging, births and deaths.
+// Herd: the scene's cows and chickens are a sample of world.herds (herds.js owns the counts).
 
-test('aging: a cow and a chicken gain dt of age on every update', () => {
+test('herd: a fresh world shows 4 cows of which 1 is a bull, and 5 chickens of which 1 is a cock', () => {
   const w = createWorld(1);
   const rng = makeRng(1);
-  const cow = byId(w, 'cow-1');
-  const chicken = byId(w, 'chicken-1');
-  cow.age = 10;
-  chicken.age = 10;
 
-  for (let i = 0; i < 10; i++) step(w, rng);
+  step(w, rng);
 
-  assert.ok(Math.abs(cow.age - 11) < 1e-9, `cow age ${cow.age}`);
-  assert.ok(Math.abs(chicken.age - 11) < 1e-9, `chicken age ${chicken.age}`);
+  assert.equal(cows(w).length, 4, 'four cows');
+  assert.equal(adultMales(w, 'cow'), 1, 'one of them a bull');
+  assert.equal(w.animals.filter((a) => a.kind === 'chicken').length, 5, 'five chickens');
+  assert.equal(adultMales(w, 'chicken'), 1, 'one of them a cock');
 });
 
-// holdCows keeps every cow in 'innocent' so no gossip starts and logs its own entry during a test.
-function holdCows(w) {
-  for (const c of cows(w)) {
-    c.state = 'innocent';
-    c.timer = 1000;
+test('herd: a big herd shows 12 cows (2 calves, no bull, 10 cows) and 14 chickens', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  Object.assign(w.herds.cow, { females: 2e6, males: 1e5, young: 3e5, leased: 0, tier: 6 });
+  Object.assign(w.herds.chicken, { females: 1e6, males: 1e5, young: 3e5, leased: 0 });
+
+  step(w, rng);
+
+  assert.equal(cows(w).length, 12, 'twelve cows');
+  assert.equal(young(w, 'cow'), 2, 'two calves');
+  assert.equal(adultMales(w, 'cow'), 0, 'no bull');
+  assert.equal(adultFemales(w, 'cow'), 10, 'ten cows');
+  assert.equal(w.animals.filter((a) => a.kind === 'chicken').length, 14, 'fourteen chickens');
+});
+
+test('herd: over 50 updates no update shows more than 12 cows or 14 chickens', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  Object.assign(w.herds.cow, { females: 2e6, males: 1e5, young: 3e5, leased: 0, tier: 6 });
+  Object.assign(w.herds.chicken, { females: 1e6, males: 1e5, young: 3e5, leased: 0 });
+
+  for (let i = 0; i < 50; i++) {
+    step(w, rng);
+    assert.ok(cows(w).length <= 12, `${cows(w).length} cows at update ${i}`);
+    assert.ok(
+      w.animals.filter((a) => a.kind === 'chicken').length <= 14,
+      `chickens over 14 at update ${i}`,
+    );
   }
-}
-
-test('death: a cow whose age reaches its life is removed and the farm records it', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const cow = byId(w, 'cow-1');
-  cow.age = 100;
-  cow.life = cow.age + 0.05;
-  holdCows(w);
-
-  step(w, rng);
-
-  assert.equal(byId(w, 'cow-1'), undefined, 'the cow is gone');
-  assert.equal(w.stats.deaths, 1);
-  assert.ok(w.bubbles.some((b) => b.text === 'LINE death'), 'a death bubble was shown');
-  assert.ok(w.effects.some((e) => e.kind === 'ghost'), 'a ghost was puffed');
-  assert.equal(w.log[0].text, 'DAISY WENT TO THE BIG PASTURE IN THE SKY');
 });
 
-test('death: a chicken goes to the big coop in the sky', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const chicken = byId(w, 'chicken-2');
-  chicken.age = 100;
-  chicken.life = chicken.age + 0.05;
-  holdCows(w);
-
-  step(w, rng);
-
-  assert.equal(byId(w, 'chicken-2'), undefined, 'the chicken is gone');
-  assert.equal(w.stats.deaths, 1);
-  assert.equal(w.log[0].text, 'CLUCK NORRIS WENT TO THE BIG COOP IN THE SKY');
-});
-
-test('death: an animal whose life is not yet over stays', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const cow = byId(w, 'cow-1');
-  cow.age = 100;
-  cow.life = cow.age + 1;
-
-  step(w, rng);
-
-  assert.equal(byId(w, 'cow-1'), cow);
-  assert.equal(w.stats.deaths, 0);
-});
-
-test('birth: an adult cow whose breed timer runs out has a calf beside it', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const mother = byId(w, 'cow-1');
-  mother.breed = 0.05;
-  const before = cows(w).length;
-
-  step(w, rng);
-
-  const calf = byId(w, 'cow-11');
-  assert.ok(calf, 'the calf is cow-11');
-  assert.equal(w.nextAnimal, 12, 'the id counter moved on once');
-  assert.equal(cows(w).length, before + 1);
-  assert.equal(calf.age, 0);
-  assert.ok(!isAdult(calf), 'the calf is not an adult');
-  assert.ok(Math.abs(calf.x - mother.x) <= 12, 'the calf is near its mother');
-  assert.equal(w.stats.births, 1);
-  assert.ok(w.effects.some((e) => e.kind === 'heart'), 'a heart was puffed');
-  assert.ok(w.bubbles.some((b) => b.text === 'LINE birth'), 'a birth bubble was shown');
-  assert.equal(w.log[0].text, `DAISY HAD A CALF: ${calf.name.toUpperCase()}`);
-  assert.ok(mother.breed >= 150 && mother.breed < 240, 'the mother breed timer is reset');
-  assert.ok(
-    !cows(w).some((c) => c !== calf && c.name === calf.name),
-    'the calf has a name no other cow has',
-  );
-});
-
-test('birth: an adult chicken has a chick and the log says CHICK', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const hen = byId(w, 'chicken-1');
-  hen.breed = 0.05;
-
-  step(w, rng);
-
-  const chick = byId(w, 'chicken-11');
-  assert.ok(chick, 'the chick is chicken-11');
-  assert.equal(chick.kind, 'chicken');
-  assert.equal(chick.age, 0);
-  assert.equal(w.stats.births, 1);
-  assert.equal(w.log[0].text, `HENRIETTA HAD A CHICK: ${chick.name.toUpperCase()}`);
-});
-
-test('birth: a calf does not count down its breed timer', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const calf = addAnimal(w, 'cow', rng, { x: 200, y: 122, age: 0 });
-  calf.breed = 5;
-
-  for (let i = 0; i < 10; i++) step(w, rng);
-
-  assert.equal(calf.breed, 5);
-  assert.equal(w.stats.births, 0);
-});
-
-test('capacity: a full herd of cows has no calf, but the breed timer still resets', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  while (herdSize(w, 'cow') < capacity(w, 'cow')) addAnimal(w, 'cow', rng);
-  const full = cows(w).length;
-  const mother = byId(w, 'cow-1');
-  mother.breed = 0.05;
-
-  step(w, rng);
-
-  assert.equal(cows(w).length, full, 'no calf was added');
-  assert.equal(w.stats.births, 0);
-  assert.ok(!w.bubbles.some((b) => b.text === 'LINE birth'));
-  assert.ok(mother.breed > 0.05, 'the breed timer was reset');
-});
-
-test('capacity: a full coop has no chick', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  while (herdSize(w, 'chicken') < capacity(w, 'chicken')) addAnimal(w, 'chicken', rng);
-  const full = herdSize(w, 'chicken');
-  byId(w, 'chicken-1').breed = 0.05;
-
-  step(w, rng);
-
-  assert.equal(herdSize(w, 'chicken'), full, 'no chick was added');
-  assert.equal(w.stats.births, 0);
-});
-
-test('birth: a lone adult cow has no calf, but its breed timer resets', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  w.animals = w.animals.filter((a) => !(a.kind === 'cow' && a.id !== 'cow-1'));
-  const mother = byId(w, 'cow-1');
-  mother.breed = 0.05;
-
-  step(w, rng);
-
-  assert.equal(cows(w).length, 1);
-  assert.equal(w.stats.births, 0);
-  assert.ok(mother.breed > 0.05, 'the breed timer was reset');
-});
-
-test('birth: calves are no mate for an adult cow', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  for (const c of cows(w)) if (c.id !== 'cow-1') c.age = 0;
-  byId(w, 'cow-1').breed = 0.05;
-
-  step(w, rng);
-
-  assert.equal(w.stats.births, 0);
-  assert.equal(cows(w).length, 4);
-});
-
-test('abduction: an abducted cow does not age, die or have young', () => {
+test('herd: lowering the herd removes visible animals but never an abducted cow', () => {
   const w = createWorld(1);
   const rng = makeRng(1);
   const cow = byId(w, 'cow-1');
   cow.abducted = true;
   cow.state = 'abducted';
   cow.lift = 30;
-  cow.age = 100;
-  cow.life = 100.05;
-  cow.breed = 0.05;
+  w.herds.cow.females = 0;
+  w.herds.cow.males = 0;
 
-  for (let i = 0; i < 5; i++) step(w, rng);
-
-  assert.equal(cow.age, 100);
-  assert.equal(cow.breed, 0.05);
-  assert.equal(byId(w, 'cow-1'), cow, 'the cow is still on the farm');
-  assert.equal(w.stats.deaths, 0);
-  assert.equal(w.stats.births, 0);
-});
-
-test('the pig never ages or dies', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const pig = byId(w, 'pig-1');
-  // Even with a life that has already run out, the pig is not touched by the life cycle.
-  pig.age = 0;
-  pig.life = 0.05;
-
-  for (let i = 0; i < 50; i++) step(w, rng);
-
-  assert.equal(byId(w, 'pig-1'), pig, 'the pig is still on the farm');
-  assert.equal(pig.age, 0);
-  assert.equal(w.stats.deaths, 0);
-});
-
-test('growing up: a calf becomes an adult after 60 s and draws while young', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  const calf = addAnimal(w, 'cow', rng, { x: 200, y: 122, age: 0 });
-
-  for (let i = 0; i < 500; i++) step(w, rng);
-  assert.equal(isAdult(calf), false, 'not an adult at 50 s');
-
-  for (let i = 0; i < 110; i++) step(w, rng);
-  assert.equal(isAdult(calf), true, 'an adult at 61 s');
-});
-
-test('drawing: a calf and a chick draw without throwing', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  addAnimal(w, 'cow', rng, { x: 200, y: 122, age: 0 });
-  addAnimal(w, 'chicken', rng, { x: 130, y: 110, age: 0 });
   step(w, rng);
+
+  assert.equal(byId(w, 'cow-1'), cow, 'the abducted cow is still in the scene');
+  assert.equal(cow.abducted, true);
+  assert.equal(cows(w).length, 1, 'only the abducted cow is left');
+});
+
+// Herd events: deaths, births and purchases show as ghosts, hearts and portals.
+
+test('death: a cow death shows a ghost, a death bubble and the log line', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  holdCows(w);
+  const names = cows(w).map((c) => c.name.toUpperCase());
+  w.herdEvents.push({ kind: 'cow', type: 'death', count: 1 });
+
+  step(w, rng);
+
+  assert.ok(w.effects.some((e) => e.kind === 'ghost'), 'a ghost was puffed');
+  assert.ok(w.bubbles.some((b) => b.text === 'LINE death'), 'a death bubble was shown');
+  assert.equal(w.log.length, 1, 'one log line');
+  assert.ok(
+    names.some((n) => w.log[0].text === `${n} WENT TO THE BIG PASTURE IN THE SKY`),
+    `log line ${w.log[0].text}`,
+  );
+  assert.deepEqual(w.herdEvents, [], 'the events were cleared');
+});
+
+test('death: a chicken death goes to the big coop in the sky', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  holdCows(w);
+  const names = w.animals.filter((a) => a.kind === 'chicken').map((c) => c.name.toUpperCase());
+  w.herdEvents.push({ kind: 'chicken', type: 'death', count: 1 });
+
+  step(w, rng);
+
+  assert.ok(
+    names.some((n) => w.log[0].text === `${n} WENT TO THE BIG COOP IN THE SKY`),
+    `log line ${w.log[0].text}`,
+  );
+});
+
+test('death: a group of deaths in one update logs AND n MORE once', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  holdCows(w);
+  w.herdEvents.push({ kind: 'cow', type: 'death', count: 2 });
+  w.herdEvents.push({ kind: 'cow', type: 'death', count: 1 });
+
+  step(w, rng);
+
+  assert.equal(w.log.length, 1, 'one log line for the group');
+  assert.match(w.log[0].text, / WENT TO THE BIG PASTURE IN THE SKY AND 2 MORE$/);
+  assert.equal(w.bubbles.filter((b) => b.text === 'LINE death').length, 1, 'one death bubble');
+});
+
+test('death: a second death within 6 s gives no second bubble, ghost or log line', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  holdCows(w);
+  w.herdEvents.push({ kind: 'cow', type: 'death', count: 1 });
+  step(w, rng);
+  const logs = w.log.length;
+
+  w.herdEvents.push({ kind: 'cow', type: 'death', count: 1 });
+  step(w, rng);
+
+  assert.equal(w.log.length, logs, 'no second log line');
+  assert.equal(w.bubbles.filter((b) => b.text === 'LINE death').length, 1, 'one death bubble');
+  assert.equal(w.effects.filter((e) => e.kind === 'ghost').length, 1, 'one ghost');
+
+  for (let i = 0; i < 60; i++) step(w, rng);
+  w.herdEvents.push({ kind: 'cow', type: 'death', count: 1 });
+  step(w, rng);
+  assert.equal(w.log.length, Math.min(5, logs + 1), 'a death after 6 s is logged');
+});
+
+test('birth: a birth shows a heart and the birth line', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  w.herdEvents.push({ kind: 'chicken', type: 'birth', count: 1 });
+
+  step(w, rng);
+
+  assert.ok(w.effects.some((e) => e.kind === 'heart'), 'a heart was puffed');
+  assert.ok(w.bubbles.some((b) => b.text === 'LINE birth'), 'a birth bubble was shown');
+});
+
+test('buy: a purchase shows a portal puff over an animal of the kind', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  // Without the pig, the only portal puffs are the purchase's.
+  w.animals = w.animals.filter((a) => a.kind !== 'pig');
+  w.herdEvents.push({ kind: 'cow', type: 'buy', count: 1, sex: 'female' });
+
+  step(w, rng);
+
+  assert.ok(w.effects.some((e) => e.kind === 'portal'), 'a portal was puffed');
+});
+
+test('drawing: bulls, cocks, calves and chicks draw without throwing', () => {
+  const w = createWorld(1);
+  const rng = makeRng(1);
+  // No step here: the herd reconcile would remove the animals added beside the existing ones.
+  const bull = addAnimal(w, 'cow', rng, { x: 200, y: 122, sex: 'male' });
+  const calf = addAnimal(w, 'cow', rng, { x: 230, y: 130, young: true });
+  const cock = addAnimal(w, 'chicken', rng, { x: 130, y: 110, sex: 'male' });
+  const chick = addAnimal(w, 'chicken', rng, { x: 140, y: 112, young: true });
+  bull.state = 'walk';
+  bull.frame = 1;
+  cock.state = 'peck';
+  cock.frame = 1;
+  calf.state = 'walk';
+  calf.frame = 1;
+  chick.state = 'peck';
+  chick.frame = 1;
 
   for (const d of animalDrawables(w)) {
     const ctx = fakeCtx();
     assert.doesNotThrow(() => d.draw(ctx));
     assert.ok(ctx.count('fillRect') > 0, 'the drawable paints something');
   }
-});
-
-test('life: a cow that dies this update is not a mate for a birth in the same update', () => {
-  const w = createWorld(1);
-  const rng = makeRng(1);
-  w.animals = w.animals.filter((a) => a.id === 'cow-1' || a.id === 'cow-2');
-  const daisy = byId(w, 'cow-1');
-  daisy.age = 100;
-  daisy.life = 100.05;
-  byId(w, 'cow-2').breed = 0.05;
-  step(w, rng);
-  assert.equal(w.stats.deaths, 1);
-  assert.equal(w.stats.births, 0);
-  assert.deepEqual(w.animals.map((a) => a.id), ['cow-2']);
 });

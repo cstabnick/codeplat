@@ -1,163 +1,242 @@
 // The shop: Sir Oinksalot is an interdimensional prince trapped in a pig, and he sells the farm
-// what it needs from beyond the veil. offers lists what is for sale and why an item cannot be
-// bought; buy spends the coins and delivers. Imports no globals and touches no window or document.
+// what it needs from beyond the veil. offers lists what is for sale, in sections, and why an item
+// cannot be bought; buy spends the coins and delivers. Bulk items take a count of 1, 10 or 'max'.
+// Imports no globals and touches no window or document.
 
+import { CIG_BOOST, PORTAL_BOOST, isNight, hasKind, money, say, logEvent, puff } from './state.js';
+import { SPECIES, KINDS, LAND } from './species.js';
 import {
-  CIG_BOOST, PORTAL_BOOST, HERD, herdSize, capacity, isNight, say, logEvent, puff,
-} from './state.js';
-import { addAnimal } from './animals.js';
-import { CONTRACT, freeCows, hireUfo } from './ufo.js';
+  room, maxBuy, buyAnimals, nextTier, upgradeHousing, nextLand, buyLand,
+} from './herds.js';
+import { LEASE, leasable, maxLease, leaseCows } from './aliens.js';
+import { CARROT_UPGRADES, carrotUpgrades, buyCarrotUpgrade } from './carrots.js';
 import { startTask } from './farmer.js';
 
 // PORTAL is the price of the prince's way home: the game's goal.
-export const PORTAL = 25000;
+export const PORTAL = 5e10;
 
-const ITEMS = ['cow', 'chicken', 'ufo', 'cigs', 'pasture', 'coop', 'portal'];
+// MARKET names each kind's female and male for sale, and the label the shop shows for the herd.
+const MARKET = {
+  cow: { female: { name: 'Cow', label: 'COWS' }, male: { name: 'Bull', label: 'BULLS' } },
+  chicken: { female: { name: 'Hen', label: 'HENS' }, male: { name: 'Cock', label: 'COCKS' } },
+  sheep: { female: { name: 'Ewe', label: 'EWES' }, male: { name: 'Ram', label: 'RAMS' } },
+  goat: { female: { name: 'Nanny goat', label: 'NANNIES' }, male: { name: 'Billy goat', label: 'BILLIES' } },
+};
 
-const contracts = (world) => world.ufos.filter((u) => u.rate > 0).length;
-const pig = (world) => world.animals.find((a) => a.kind === 'pig');
+// PLURAL is the plain name of a kind, for the sentences the shop writes.
+const PLURAL = { cow: 'cows', chicken: 'chickens', sheep: 'sheep', goat: 'goats' };
 
-// price returns the cost of an item now. Animals cost more the bigger the herd, upgrades double
-// each time, and a UFO contract costs 5 more for each one already flying.
-export function price(world, id) {
-  const u = world.upgrades;
-  switch (id) {
-    case 'cow': return Math.round(30 * 1.12 ** herdSize(world, 'cow'));
-    case 'chicken': return Math.round(8 * 1.12 ** herdSize(world, 'chicken'));
-    case 'ufo': return 5 + 5 * contracts(world);
-    case 'cigs': return 20 * 2 ** u.cigs;
-    case 'pasture': return 75 * 2 ** u.pasture;
-    case 'coop': return 40 * 2 ** u.coop;
-    case 'portal': return PORTAL;
-    default: return Infinity;
-  }
+// CARROT_BULK lists the field upgrades that can be bought in bulk.
+const CARROT_BULK = ['gloves', 'combines'];
+
+// BULK_LIMIT caps how many levels 'max' counts or buys at once.
+const BULK_LIMIT = 1000;
+
+// item builds one offer. ok is true when nothing blocks it; bulk items default to a count of 0 and
+// otherwise maxCount is 0.
+function item(section, id, fields) {
+  const reason = fields.reason ?? '';
+  return { section, id, bulk: false, maxCount: 0, ...fields, reason, ok: reason === '' };
 }
 
-// blocked returns why an item cannot be bought apart from its price, or '' when it can.
-function blocked(world, id) {
-  switch (id) {
-    case 'cow':
-    case 'chicken':
-      return herdSize(world, id) >= capacity(world, id) ? (id === 'cow' ? 'PASTURE FULL' : 'COOP FULL') : '';
-    case 'ufo':
-      return freeCows(world).length === 0 ? 'NO FREE ADULT COW' : '';
-    case 'pasture':
-    case 'coop': {
-      const kind = id === 'pasture' ? 'cow' : 'chicken';
-      return capacity(world, kind) >= HERD[kind].max ? 'AS BIG AS IT GETS' : '';
+// marketItems lists the animals for sale: a female and a male of each kind the farm has land for.
+function marketItems(world) {
+  const items = [];
+  for (const kind of KINDS) {
+    if (!hasKind(world, kind)) continue;
+    const s = SPECIES[kind];
+    for (const sex of ['female', 'male']) {
+      const { name, label } = MARKET[kind][sex];
+      const h = world.herds[kind];
+      const count = sex === 'female' ? h.females : h.males;
+      const cost = s.price[sex];
+      const blurb = sex === 'female'
+        ? `Makes ${s.product} worth ${s.value} coins every ${s.seconds} seconds, and has young with a ${s.male}. Her young are a random mix of the sexes.`
+        : `Makes nothing itself, but covers up to ${s.matesPerMale} ${s.female}s, so the young come from it.`;
+      let reason = '';
+      if (room(world, kind) === 0) reason = 'NO ROOM: UPGRADE HOUSING';
+      else if (world.coins < cost) reason = 'NOT ENOUGH COINS';
+      items.push(item('MARKET', `${kind}:${sex}`, {
+        name, blurb, owned: `${money(count)} ${label}`, cost, reason, bulk: true, maxCount: maxBuy(world, kind, sex),
+      }));
     }
-    case 'portal':
-      return world.upgrades.portal ? 'HE IS HOME (SOMETIMES)' : '';
-    default:
-      return '';
   }
+  return items;
 }
 
-// owned describes what the farm has of an item, for the shop's row.
-function owned(world, id) {
-  const u = world.upgrades;
-  switch (id) {
-    case 'cow': return `${herdSize(world, 'cow')}/${capacity(world, 'cow')} COWS`;
-    case 'chicken': return `${herdSize(world, 'chicken')}/${capacity(world, 'chicken')} HENS`;
-    case 'ufo': return `${contracts(world)} FLYING`;
-    case 'cigs': return `${u.cigs} PACKS`;
-    case 'pasture': return `ROOM FOR ${capacity(world, 'cow')}`;
-    case 'coop': return `ROOM FOR ${capacity(world, 'chicken')}`;
-    case 'portal': return u.portal ? 'FIXED' : 'BROKEN';
-    default: return '';
-  }
-}
-
-const NAMES = {
-  cow: 'Cow',
-  chicken: 'Chicken',
-  ufo: 'UFO contract',
-  cigs: 'Royal cigarettes',
-  pasture: 'Bigger pasture',
-  coop: 'Bigger coop',
-  portal: 'Fix the portal home',
-};
-
-const BLURBS = {
-  cow: 'From a dimension where cows are slightly more cow. Gives milk, has calves, and one day does not.',
-  chicken: 'Lays eggs, panics, lays more eggs. Hatches chicks while the coop has room.',
-  ufo: `My associates upstairs borrow one adult cow for ${CONTRACT.stay} seconds and pay ` +
-    `$${CONTRACT.rate} a second while they have her. One saucer per cow. She comes back. Mostly.`,
-  cigs: `Gary works harder out of guilt: milk and eggs are worth x${CIG_BOOST} more. ` +
-    'He will be right back. He is checking the barn.',
-  pasture: `I fold a little space into the fence. Room for ${HERD.cow.step} more cows.`,
-  coop: `The coop becomes bigger on the inside. Room for ${HERD.chicken.step} more chickens.`,
-  portal: `Send me home and I put in a good word with the multiverse: x${PORTAL_BOOST} productivity, forever.`,
-};
-
-// offers returns one entry per item: {id, name, blurb, owned, cost, ok, reason}. ok is true when it
-// can be bought now; otherwise reason says why, the shortfall included.
-export function offers(world) {
-  return ITEMS.map((id) => {
-    const cost = price(world, id);
-    let reason = blocked(world, id);
-    if (!reason && world.coins < cost) reason = 'NOT ENOUGH COINS';
-    return { id, name: NAMES[id], blurb: BLURBS[id], owned: owned(world, id), cost, ok: !reason, reason };
+// housingItems lists the next housing tier for each kind the farm owns.
+function housingItems(world) {
+  return KINDS.filter((kind) => hasKind(world, kind)).map((kind) => {
+    const current = SPECIES[kind].tiers[world.herds[kind].tier];
+    const next = nextTier(world, kind);
+    const blurb = next
+      ? `Room for ${money(next.capacity)} animals, counting young and leased ones.`
+      : 'This herd is in its biggest housing.';
+    let reason = '';
+    if (!next) reason = 'TOP TIER';
+    else if (world.coins < next.cost) reason = 'NOT ENOUGH COINS';
+    return item('HOUSING', `house:${kind}`, {
+      name: (next ?? current).name,
+      blurb,
+      owned: `NOW: ${current.name.toUpperCase()} (${money(current.capacity)})`,
+      cost: next ? next.cost : 0,
+      reason,
+    });
   });
+}
+
+// landItem lists the next parcel of land, and what lives there.
+function landItem(world) {
+  const next = nextLand(world);
+  const kind = KINDS.find((k) => SPECIES[k].parcel === world.land);
+  let reason = '';
+  if (!next) reason = 'ALL LAND OWNED';
+  else if (world.coins < next.cost) reason = 'NOT ENOUGH COINS';
+  return item('LAND', 'land', {
+    name: (next ?? LAND[LAND.length - 1]).name,
+    blurb: next && kind ? `Buys ${next.name}, where ${PLURAL[kind]} live.` : 'Every parcel is owned.',
+    owned: `${world.land}/${LAND.length} PARCELS`,
+    cost: next ? next.cost : 0,
+    reason,
+  });
+}
+
+// maxLevels counts how many levels of a field upgrade 'max' would buy with the coins the farm has,
+// without spending anything. It follows the same prices as buyCarrotUpgrade.
+function maxLevels(world, id) {
+  const def = CARROT_UPGRADES.find((u) => u.id === id);
+  let level = world.carrots[id];
+  let coins = world.coins;
+  let count = 0;
+  while (count < BULK_LIMIT && level < def.max) {
+    const cost = Math.round(def.base * def.growth ** level);
+    if (coins < cost) break;
+    coins -= cost;
+    level += 1;
+    count += 1;
+  }
+  return count;
+}
+
+// fieldItems lists the carrot field's upgrades.
+function fieldItems(world) {
+  return carrotUpgrades(world).map((u) => item('FIELD', `carrot:${u.id}`, {
+    name: u.name,
+    blurb: u.blurb,
+    owned: `LEVEL ${u.level}`,
+    cost: u.cost,
+    reason: u.reason,
+    bulk: CARROT_BULK.includes(u.id),
+    maxCount: CARROT_BULK.includes(u.id) ? maxLevels(world, u.id) : 0,
+  }));
+}
+
+// offers returns the shop's items in order: {section, id, name, blurb, owned, cost, ok, reason,
+// bulk, maxCount}. ok is true when the item can be bought now; for a bulk item, that at least one
+// can be. reason says why not, the shortfall included, and is '' when ok. maxCount is how many a
+// bulk item can take now, and 0 otherwise.
+export function offers(world) {
+  const u = world.upgrades;
+  const cigCost = 20 * 3 ** u.cigs;
+  const cigReason = world.coins < cigCost ? 'NOT ENOUGH COINS' : '';
+  const leaseReason = leasable(world) === 0
+    ? 'NO FREE COWS'
+    : world.coins < LEASE.price ? 'NOT ENOUGH COINS' : '';
+  const portalReason = u.portal
+    ? 'HE IS HOME (SOMETIMES)'
+    : world.coins < PORTAL ? 'NOT ENOUGH COINS' : '';
+
+  return [
+    ...marketItems(world),
+    ...housingItems(world),
+    landItem(world),
+    ...fieldItems(world),
+    item('GARY', 'cigs', {
+      name: 'Royal cigarettes',
+      blurb: `Gary works harder out of guilt: milk and eggs are worth x${CIG_BOOST} more. ` +
+        'He will be right back. He is checking the barn.',
+      owned: `${u.cigs} PACKS`,
+      cost: cigCost,
+      reason: cigReason,
+    }),
+    item('ALIENS', 'lease', {
+      name: 'UFO lease',
+      blurb: `My associates upstairs borrow one adult cow for ${LEASE.stay} seconds and pay ` +
+        `${LEASE.rate} coins a second while they have her. She comes back. Mostly.`,
+      owned: `${money(world.herds.cow.leased)} COWS IN SPACE`,
+      cost: LEASE.price,
+      reason: leaseReason,
+      bulk: true,
+      maxCount: maxLease(world),
+    }),
+    item('PORTAL', 'portal', {
+      name: 'Fix the portal home',
+      blurb: `Send me home and I put in a good word with the multiverse: x${PORTAL_BOOST} productivity, forever.`,
+      owned: u.portal ? 'FIXED' : 'BROKEN',
+      cost: PORTAL,
+      reason: portalReason,
+    }),
+  ];
 }
 
 // pigSays puts a speech bubble over the prince.
 function pigSays(world, text) {
-  const p = pig(world);
+  const p = world.animals.find((a) => a.kind === 'pig');
   if (p) say(world, p.x, p.y - p.lift - 9, text, 'speech', 4);
 }
 
-// deliver gives the farm what was bought. It returns false when the delivery failed and nothing
-// should be charged.
-function deliver(world, id, rng, line) {
+// deliver gives the farm what was bought and returns {count, text}: count is how many were
+// delivered, 0 when none were. Spending is done here for cigarettes and the portal, and by the
+// herd, land, aliens and carrot modules for the rest.
+function deliver(world, offer, n, rng, line) {
   const u = world.upgrades;
-  switch (id) {
-    case 'cow':
-    case 'chicken': {
-      const a = addAnimal(world, id, rng);
-      puff(world, 'portal', a.x, a.y - 6, 0, -4, 1.2);
-      puff(world, 'sparkle', a.x - 1, a.y - 10);
-      logEvent(world, `${a.name.toUpperCase()} ARRIVED THROUGH THE PORTAL`);
-      return true;
+  const amount = offer.bulk ? n : 1;
+  switch (offer.section) {
+    case 'MARKET': {
+      const [kind, sex] = offer.id.split(':');
+      const count = buyAnimals(world, kind, sex, amount);
+      return { count, text: line('shop') };
     }
-    case 'ufo':
-      if (!hireUfo(world, rng)) return false;
-      logEvent(world, 'THE ALIENS ARE ON THEIR WAY. CASH UP FRONT.');
-      return true;
-    case 'cigs':
+    case 'HOUSING': {
+      const kind = offer.id.slice('house:'.length);
+      return { count: upgradeHousing(world, kind) ? 1 : 0, text: line('tier') };
+    }
+    case 'LAND':
+      return { count: buyLand(world) ? 1 : 0, text: line('land') };
+    case 'FIELD': {
+      const id = offer.id.slice('carrot:'.length);
+      return { count: buyCarrotUpgrade(world, id, amount), text: line('shop') };
+    }
+    case 'ALIENS':
+      return { count: leaseCows(world, amount), text: line('shop') };
+    case 'GARY':
+      world.coins -= offer.cost;
       u.cigs += 1;
       logEvent(world, `GARY GOT PACK NUMBER ${u.cigs}. PRODUCTIVITY UP.`);
       if (!isNight(world) && world.farmer.task !== 'smoke') startTask(world, 'smoke', rng, line);
-      return true;
-    case 'pasture':
-      u.pasture += 1;
-      logEvent(world, 'THE PASTURE IS NOW BIGGER ON THE INSIDE');
-      return true;
-    case 'coop':
-      u.coop += 1;
-      logEvent(world, 'THE COOP IS NOW BIGGER ON THE INSIDE');
-      return true;
-    case 'portal': {
+      return { count: 1, text: line('shop') };
+    case 'PORTAL': {
+      world.coins -= offer.cost;
       u.portal = 1;
-      const p = pig(world);
+      const p = world.animals.find((a) => a.kind === 'pig');
       if (p) for (let i = 0; i < 12; i++) puff(world, 'portal', p.x + rng.range(-12, 12), p.y - rng.range(0, 16), 0, -10, 2);
       logEvent(world, 'THE PRINCE WENT HOME. HE CAME BACK FOR THE MUD.');
-      return true;
+      return { count: 1, text: 'HOME! ...IT WAS WORSE. I AM BACK. KEEP THE MUD WARM.' };
     }
     default:
-      return false;
+      return { count: 0, text: 'THE VOID SAYS NO.' };
   }
 }
 
-// buy buys an item if offers says it can, and returns {ok, text}: text is what the prince says,
-// which is also shown over his head.
-export function buy(world, id, rng, line) {
+// buy buys the item with the given id, if offers says it can. n is 1, 10 or 'max' and is used
+// only by bulk items. It returns {ok, text, count}: count is how many were bought, and text is
+// what the prince says, which is also shown over his head on success.
+export function buy(world, id, n, rng, line) {
   const offer = offers(world).find((o) => o.id === id);
-  if (!offer) return { ok: false, text: 'I DO NOT SELL THAT. YET.' };
-  if (!offer.ok) return { ok: false, text: offer.reason };
-  if (!deliver(world, id, rng, line)) return { ok: false, text: 'THE VOID SAYS NO.' };
-  world.coins -= offer.cost;
-  const text = id === 'portal' ? 'HOME! ...IT WAS WORSE. I AM BACK. KEEP THE MUD WARM.' : line('shop');
+  if (!offer) return { ok: false, count: 0, text: 'I DO NOT SELL THAT. YET.' };
+  if (!offer.ok) return { ok: false, count: 0, text: offer.reason };
+  const { count, text } = deliver(world, offer, n, rng, line);
+  if (count === 0) return { ok: false, count: 0, text: offer.reason || 'THE VOID SAYS NO.' };
   pigSays(world, text);
-  return { ok: true, text };
+  return { ok: true, text, count };
 }

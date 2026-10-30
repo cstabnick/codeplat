@@ -265,13 +265,112 @@ test('drawHud keeps a long log entry clear of the statistics text', () => {
   const ctx = fakeCtx();
   drawHud(ctx, world);
 
-  const statsText = 'COWS 4/6 HENS 5/8 X1.00';
+  const statsText = 'COWS 4 HENS 5 X1.00';
   const statsX = 318 - textWidth(statsText);
   const logPixels = fills(ctx).filter((r) => r.fill === '#fff1e8' && r.y >= 171);
   assert.ok(logPixels.length > 0, 'the log entry should be drawn');
   const rightmost = Math.max(...logPixels.map((r) => r.x + r.w - 1));
   assert.ok(rightmost <= statsX - 5, `log ends at ${rightmost}, stats start at ${statsX}`);
   assert.equal(ctx.globalAlpha, 1);
+});
+
+test('drawHud shows herd totals for owned kinds only, with the productivity multiplier', () => {
+  const world = createWorld(1);
+  const ctx = fakeCtx();
+  drawHud(ctx, world);
+  const expected = fakeCtx();
+  drawText(expected, 'COWS 4 HENS 5 X1.00', 318 - textWidth('COWS 4 HENS 5 X1.00'), 180 - 9 + 2, '#c2c3c7');
+  const want = fills(expected).map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
+  const got = fills(ctx)
+    .filter((r) => r.fill === '#c2c3c7' && r.y >= 173 && r.x >= 318 - textWidth('COWS 4 HENS 5 X1.00'))
+    .map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
+  assert.deepEqual(got, want);
+});
+
+test('drawHud shows the big herd totals of owned land in the statistics', () => {
+  const world = createWorld(1);
+  world.land = 3;
+  world.herds.sheep.females = 1.5e6;
+  const text = 'COWS 4 HENS 5 SHEEP 1.5M GOATS 0 X1.00';
+  const ctx = fakeCtx();
+  drawHud(ctx, world);
+  // Sheep and goats appear once their parcels are owned.
+  const expected = fakeCtx();
+  drawText(expected, text, 318 - textWidth(text), 173, '#c2c3c7');
+  const want = fills(expected).map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
+  const got = fills(ctx)
+    .filter((r) => r.fill === '#c2c3c7' && r.y >= 173 && r.x >= 318 - textWidth(text))
+    .map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
+  assert.deepEqual(got, want);
+});
+
+test('drawEffects draws the carrot as a 3x5 orange and green sprite', () => {
+  const rects = effectRects('carrot', 0);
+  assert.deepEqual(bbox(rects), { x: 50, y: 60, w: 3, h: 5 });
+  assert.ok(rects.length > 0);
+  assert.ok(rects.every((r) => r.fill === '#00e436' || r.fill === '#ffa300'));
+});
+
+test('drawBubbles with an offset shifts bubbles and skips those far off screen', () => {
+  const world = createWorld(1);
+  say(world, 400, 60, 'NEAR', 'speech');
+  const ctx = fakeCtx();
+  drawBubbles(ctx, world, 320);
+  const expected = fakeCtx();
+  drawBubble(expected, 80, 60, 'NEAR', 'speech');
+  assert.deepEqual(ctx.calls, expected.calls);
+
+  const far = createWorld(1);
+  say(far, 40, 60, 'GONE', 'speech');
+  const ctx2 = fakeCtx();
+  drawBubbles(ctx2, far, 320);
+  assert.equal(ctx2.calls.length, 0);
+});
+
+// arrowBoxes returns the black 7x9 boxes that the pan arrows are drawn in.
+function arrowBoxes(ctx) {
+  return fills(ctx).filter((r) => r.fill === '#000000' && r.w === 7 && r.h === 9);
+}
+
+test('drawHud shows no pan arrows on a fresh world', () => {
+  const world = createWorld(1);
+  const ctx = fakeCtx();
+  drawHud(ctx, world);
+  assert.equal(arrowBoxes(ctx).length, 0);
+});
+
+test('drawHud shows only the right arrow when more land lies to the right', () => {
+  const world = createWorld(1);
+  world.land = 2;
+  world.camera.x = 0;
+  const ctx = fakeCtx();
+  drawHud(ctx, world);
+  const boxes = arrowBoxes(ctx);
+  assert.equal(boxes.length, 1);
+  assert.equal(boxes[0].x, 312);
+  assert.equal(boxes[0].y, 85);
+  // The gold '>' glyph sits inside the box, one unit in from each edge.
+  const glyph = fills(ctx).filter((r) => r.fill === '#ffec27' && r.y >= 85 && r.y < 94);
+  assert.ok(glyph.length > 0, 'expected the gold right arrow glyph');
+  assert.ok(glyph.every((r) => r.x >= 312 && r.x + r.w <= 319));
+  assert.deepEqual(bbox(glyph), { x: 314, y: 87, w: 3, h: 5 });
+});
+
+test('drawHud shows only the left arrow when the camera is panned right', () => {
+  const world = createWorld(1);
+  world.land = 2;
+  world.camera.x = 320;
+  const ctx = fakeCtx();
+  drawHud(ctx, world);
+  const boxes = arrowBoxes(ctx);
+  assert.equal(boxes.length, 1);
+  assert.equal(boxes[0].x, 1);
+  assert.equal(boxes[0].y, 85);
+  // The gold '<' glyph sits inside the box, one unit in from each edge.
+  const glyph = fills(ctx).filter((r) => r.fill === '#ffec27' && r.y >= 85 && r.y < 94);
+  assert.ok(glyph.length > 0, 'expected the gold left arrow glyph');
+  assert.ok(glyph.every((r) => r.x >= 1 && r.x + r.w <= 8));
+  assert.deepEqual(bbox(glyph), { x: 3, y: 87, w: 3, h: 5 });
 });
 
 test('drawHud draws the coins with money formatting, ending at the right edge', () => {

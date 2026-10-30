@@ -93,17 +93,17 @@ test('harvesting a ripe plot adds its crop value to coins and replants it at sta
   world.plots.forEach((p) => { p.stage = 0; });
   const plot = world.plots[7];
   plot.stage = 3;
-  plot.crop = 'corn';
+  plot.crop = 'carrot';
   const before = world.coins;
   startTask(world, 'harvest', rng, line);
 
   const harvested = runUntil(world, rng, 30, () => world.coins !== before);
   assert.ok(harvested, 'no coins added within 30 s');
-  assert.equal(world.coins - before, CROPS.corn.value);
+  assert.equal(world.coins - before, CROPS.carrot.value);
   assert.equal(plot.stage, 0, 'replanted at stage 0');
   assert.equal(plot.growth, 0);
   assert.equal(plot.water, 0);
-  assert.ok(['carrot', 'corn', 'pumpkin'].includes(plot.crop), `replanted as ${plot.crop}`);
+  assert.equal(plot.crop, 'carrot', `replanted as ${plot.crop}`);
 });
 
 test('startTask harvest with no ripe plot does nothing', () => {

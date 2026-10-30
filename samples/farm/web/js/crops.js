@@ -21,7 +21,7 @@ export function updateCrops(world, dt) {
     if (plot.crop === null) continue;
     const before = plot.stage;
     if (plot.water > 0) {
-      plot.growth = Math.min(1, plot.growth + dt / CROPS[plot.crop].grow);
+      plot.growth = Math.min(1, plot.growth + dt * 1.5 ** (world.carrots?.fertilizer ?? 0) / CROPS[plot.crop].grow);
     }
     plot.water = Math.max(0, plot.water - dt / 60);
     plot.stage = plot.growth >= 1 ? 3 : Math.floor(plot.growth * 3);

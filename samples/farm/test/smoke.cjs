@@ -110,31 +110,41 @@ async function main() {
     if (day.colours < 2) fail(`canvas is one flat colour (${day.colours} sampled colours)`);
     if (day.problems.length) fail(`day page reported:\n  ${day.problems.join('\n  ')}`);
 
-    // The pig's shop: S opens it, and buying a chicken spends coins and adds one.
+    // The pig's shop: S opens it, and buying a hen spends coins and adds one to the herd. The
+    // herd is counted, not the drawn chickens, which catch up on a later step.
     await day.page.keyboard.press('s');
     if (await day.page.isHidden('#shop')) fail('pressing S did not open the shop');
     const before = await day.page.evaluate(() => ({
       coins: window.farm.world.coins,
-      hens: window.farm.world.animals.filter((a) => a.kind === 'chicken').length,
+      hens: window.farm.world.herds.chicken.females,
     }));
-    await day.page.click('#shop-items li:nth-child(2) button');
+    await day.page.click('li[data-id="chicken:female"] button');
     const after = await day.page.evaluate(() => ({
       coins: window.farm.world.coins,
-      hens: window.farm.world.animals.filter((a) => a.kind === 'chicken').length,
+      hens: window.farm.world.herds.chicken.females,
     }));
     if (!(after.hens === before.hens + 1 && after.coins < before.coins)) {
       fail(`buying a chicken: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
     }
+
+    // Clicking the carrot field plucks a carrot.
+    const k = await day.page.evaluate(() => document.getElementById('farm').clientWidth / 320);
+    const plucksBefore = await day.page.evaluate(() => window.farm.world.stats.plucks);
+    await day.page.click('#farm', { position: { x: 30 * k, y: 110 * k } });
+    const plucksAfter = await day.page.evaluate(() => window.farm.world.stats.plucks);
+    if (plucksAfter !== plucksBefore + 1) {
+      fail(`plucking a carrot: plucks ${plucksBefore} -> ${plucksAfter}`);
+    }
     if (day.problems.length) fail(`shop reported:\n  ${day.problems.join('\n  ')}`);
     await day.page.context().close();
 
-    // Night page: the U easter egg starts a UFO visit.
+    // Night page: the U easter egg starts an alien visit.
     const night = await visit(browser, 'seed=42&hour=23', 'seed42-hour23');
     if (!(night.t1 > night.t0)) fail(`night: world.time did not advance: ${night.t0} -> ${night.t1}`);
     if (night.colours < 2) fail(`night: canvas is one flat colour (${night.colours} sampled colours)`);
     await night.page.keyboard.press('u');
-    const saucers = await night.page.evaluate(() => window.farm.world.ufos.length);
-    if (saucers === 0) fail('night: pressing U did not start a UFO visit');
+    const visiting = await night.page.evaluate(() => Boolean(window.farm.world.aliens.visit));
+    if (!visiting) fail('night: pressing U did not start an alien visit');
     if (night.problems.length) fail(`night page reported:\n  ${night.problems.join('\n  ')}`);
     await night.page.context().close();
 

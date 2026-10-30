@@ -3,9 +3,10 @@
 // the latest log entry, and the pause and speed badges). Nothing here runs on import.
 //
 // Sprite letters are PALETTE keys from pixel.js: '2' #7e2553, '4' #ab5236, '6' #c2c3c7,
-// '7' #fff1e8, '8' #ff004d, '9' #ffa300, 'a' #ffec27, 'c' #29adff, 'd' #83769c.
+// '7' #fff1e8, '8' #ff004d, '9' #ffa300, 'a' #ffec27, 'b' #00e436, 'c' #29adff, 'd' #83769c.
 
-import { WIDTH, HEIGHT, hourOf, money, herdSize, capacity, productivity } from './state.js';
+import { WIDTH, HEIGHT, hourOf, money, productivity, herdTotal, hasKind, landWidth } from './state.js';
+import { KINDS } from './species.js';
 import { drawSprite, drawText, textWidth, drawBubble } from './pixel.js';
 
 const HUD_TEXT = '#fff1e8';
@@ -17,7 +18,7 @@ const BAR_H = 9;
 
 const KNOWN_EFFECTS = new Set([
   'smoke', 'zzz', 'note', 'coin', 'drop', 'feather', 'sparkle', 'heart', 'mud',
-  'milk', 'egg', 'ghost', 'portal',
+  'milk', 'egg', 'ghost', 'portal', 'carrot',
 ]);
 
 const SPRITES = {
@@ -34,6 +35,7 @@ const SPRITES = {
   ghost: ['.777.', '70707', '77777', '7.7.7'],
   portalA: ['d.d', '.2.', 'd.d'],
   portalB: ['.d.', 'd2d', '.d.'],
+  carrot: ['b.b', '.b.', '999', '99.', '.9.'],
 };
 
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -113,6 +115,9 @@ function drawOne(ctx, e) {
     case 'ghost':
       drawSprite(ctx, SPRITES.ghost, e.x, e.y);
       break;
+    case 'carrot':
+      drawSprite(ctx, SPRITES.carrot, e.x, e.y);
+      break;
     case 'portal':
       // Flickers between two frames, switching every sixth of a second.
       drawSprite(ctx, Math.floor(e.age * 6) % 2 === 0 ? SPRITES.portalA : SPRITES.portalB, e.x, e.y);
@@ -133,9 +138,14 @@ export function drawEffects(ctx, world) {
   ctx.globalAlpha = 1;
 }
 
-// drawBubbles draws each bubble, oldest first.
-export function drawBubbles(ctx, world) {
-  for (const b of world.bubbles) drawBubble(ctx, b.x, b.y, b.text, b.kind);
+// drawBubbles draws each bubble, oldest first. offsetX is the camera's left edge in world units;
+// a bubble more than 40 units off either side of the screen is skipped.
+export function drawBubbles(ctx, world, offsetX = 0) {
+  for (const b of world.bubbles) {
+    const x = b.x - offsetX;
+    if (x < -40 || x > WIDTH + 40) continue;
+    drawBubble(ctx, x, b.y, b.text, b.kind);
+  }
 }
 
 // bar paints a translucent black strip of the given height from row y.
@@ -144,6 +154,13 @@ function bar(ctx, y) {
   ctx.fillStyle = BLACK;
   ctx.fillRect(0, y, WIDTH, BAR_H);
   ctx.globalAlpha = 1;
+}
+
+// drawArrow draws a 7x9 black box at x, 85 with a 3x5 gold glyph centred in it.
+function drawArrow(ctx, x, glyph) {
+  ctx.fillStyle = BLACK;
+  ctx.fillRect(x, 85, 7, 9);
+  drawText(ctx, glyph, x + 2, 87, GOLD);
 }
 
 // drawHud draws the top bar, the bottom bar, and the pause and speed badges. rate is the income in
@@ -167,9 +184,10 @@ export function drawHud(ctx, world, rate = 0) {
   drawText(ctx, rateText, coinSpriteX - 4 - textWidth(rateText), 2, DIM);
 
   // Bottom bar: the newest log entry on the left, cut to fit; the statistics on the right.
-  const statsText = `COWS ${herdSize(world, 'cow')}/${capacity(world, 'cow')} `
-    + `HENS ${herdSize(world, 'chicken')}/${capacity(world, 'chicken')} `
-    + `X${productivity(world).toFixed(2)}`;
+  const labels = { cow: 'COWS', chicken: 'HENS', sheep: 'SHEEP', goat: 'GOATS' };
+  const counts = KINDS.filter((kind) => hasKind(world, kind))
+    .map((kind) => `${labels[kind]} ${money(herdTotal(world, kind))}`);
+  const statsText = [...counts, `X${productivity(world).toFixed(2)}`].join(' ');
   const statsX = RIGHT - textWidth(statsText);
   const barY = HEIGHT - BAR_H + 2;
   drawText(ctx, statsText, statsX, barY, DIM);
@@ -180,6 +198,10 @@ export function drawHud(ctx, world, rate = 0) {
     while (chars.length > 0 && 2 + textWidth(chars.join('')) > statsX - 4) chars.pop();
     if (chars.length > 0) drawText(ctx, chars.join(''), 2, barY, HUD_TEXT);
   }
+
+  // Pan arrows: a black box at the edge of the screen when there is more land that way.
+  if (world.camera.x > 0) drawArrow(ctx, 1, '<');
+  if (world.camera.x < landWidth(world) - WIDTH) drawArrow(ctx, 312, '>');
 
   if (world.paused) {
     const label = 'PAUSED';

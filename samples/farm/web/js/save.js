@@ -4,7 +4,7 @@
 import { createWorld } from './state.js';
 
 export const SAVE_KEY = 'gossip-acres-save';
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 // The longest a farm can be away and still count as away time, in seconds.
 const MAX_AWAY = 7200;
@@ -40,14 +40,33 @@ export function loadWorld(storage, now) {
     ...w,
     stats: { ...fresh.stats, ...w.stats },
     upgrades: { ...fresh.upgrades, ...w.upgrades },
-    economy: { ...fresh.economy, ...w.economy },
     farmer: { ...fresh.farmer, ...w.farmer },
+    carrots: { ...fresh.carrots, ...w.carrots },
+    aliens: { ...fresh.aliens, ...w.aliens },
+    camera: { ...fresh.camera, ...w.camera },
+    herds: mergeHerds(fresh.herds, w.herds),
+    herdEvents: [],
     paused: false,
   };
   const away = typeof saved.savedAt === 'number'
     ? Math.min(MAX_AWAY, Math.max(0, (now - saved.savedAt) / 1000))
     : 0;
   return { world, away };
+}
+
+// mergeHerds fills each kind's herd and its acc counters from the saved herds, so a missing kind or counter
+// gets its default from the fresh world.
+function mergeHerds(freshHerds, savedHerds) {
+  const herds = {};
+  for (const k of Object.keys(freshHerds)) {
+    const saved = savedHerds?.[k];
+    herds[k] = {
+      ...freshHerds[k],
+      ...saved,
+      acc: { ...freshHerds[k].acc, ...saved?.acc },
+    };
+  }
+  return herds;
 }
 
 // clearSave removes the saved game. It never throws.

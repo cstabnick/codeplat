@@ -1,6 +1,8 @@
 // The world model. Every other module reads and writes this state; see the field
 // ownership notes in ARCHITECTURE.md for which module changes which field.
 
+import { SPECIES, KINDS, PARCEL_W } from './species.js';
+
 export const WIDTH = 320;
 export const HEIGHT = 180;
 export const HORIZON = 64;        // sky above, ground below
@@ -20,15 +22,19 @@ export const CROPS = {
   corn:    { grow: 60, value: 5 },
   pumpkin: { grow: 90, value: 12 },
 };
-// ADULT_AGE is the age in seconds at which a cow or chicken grows up: an adult gives milk or eggs
-// and can have young. The pig is a prince and never ages.
-export const ADULT_AGE = { cow: 60, chicken: 40 };
-// HERD is how many of each kind the farm has room for: base, plus step for each pasture or coop
-// upgrade, up to max.
-export const HERD = {
-  cow: { base: 6, step: 3, max: 24, upgrade: 'pasture' },
-  chicken: { base: 8, step: 4, max: 28, upgrade: 'coop' },
+// The land beyond the first parcel. MEADOW is where the sheep roam (parcel 1) and HILL where the
+// goats do (parcel 2). SITES is where each species' housing stands: x is its left edge and y the
+// ground line under it; a building is drawn up from y.
+export const MEADOW = { x: 336, y: 100, w: 200, h: 64 };
+export const HILL = { x: 656, y: 100, w: 200, h: 64 };
+export const SITES = {
+  cow: { x: 230, y: 84 },
+  chicken: { x: 120, y: 84 },
+  sheep: { x: 552, y: 92 },
+  goat: { x: 872, y: 92 },
 };
+export const CARROT_VALUE = 1;    // coins for one plucked carrot, before click power
+export const RIPE_BONUS = 3;      // a ripe carrot is worth this many carrots
 export const CIG_BOOST = 1.25;    // productivity multiplier per pack of cigarettes
 export const PORTAL_BOOST = 2;    // productivity multiplier once the prince's portal is fixed
 
@@ -38,12 +44,6 @@ const EFFECT_LIMIT = 120;
 
 // createWorld returns a new world. Same seed, same world.
 export function createWorld(seed) {
-  // Ages, lives and breeding timers are staggered so the first animals do not all grow old together.
-  const life = {
-    'cow-1': [120, 1100, 90], 'cow-2': [300, 1200, 160], 'cow-3': [60, 1000, 220], 'cow-4': [480, 900, 120],
-    'chicken-1': [40, 640, 60], 'chicken-2': [120, 700, 100], 'chicken-3': [200, 600, 80],
-    'chicken-4': [280, 720, 120], 'chicken-5': [360, 660, 140],
-  };
   const animals = [
     { id: 'cow-1', kind: 'cow', name: 'Daisy',      x: 200, y: 122, facing: 'right', state: 'graze' },
     { id: 'cow-2', kind: 'cow', name: 'Bessie',     x: 236, y: 144, facing: 'left',  state: 'graze' },
@@ -64,9 +64,6 @@ export function createWorld(seed) {
     noticed: 0,
     lift: 0,
     abducted: false,
-    age: life[a.id] ? life[a.id][0] : 0,
-    life: life[a.id] ? life[a.id][1] : 0,
-    breed: life[a.id] ? life[a.id][2] : 0,
   }));
 
   const plots = [];
@@ -76,7 +73,7 @@ export function createWorld(seed) {
       plots.push({
         col,
         row,
-        crop: ['carrot', 'corn', 'pumpkin'][col % 3],
+        crop: 'carrot',
         growth,
         stage: growth >= 1 ? 3 : Math.floor(growth * 3),
         water: 0.5,
@@ -88,10 +85,25 @@ export function createWorld(seed) {
     seed,
     time: 0, day: 1, clock: 0, speed: 1, paused: false,
     coins: 10,
-    stats: { cigarettes: 0, gossip: 0, harvests: 0, abductions: 0, milk: 0, eggs: 0, births: 0, deaths: 0 },
-    upgrades: { cigs: 0, pasture: 0, coop: 0, portal: 0 },
-    economy: { milk: 0, eggs: 0, alien: 0 },
+    stats: { cigarettes: 0, gossip: 0, harvests: 0, abductions: 0, milk: 0, eggs: 0, births: 0, deaths: 0, plucks: 0 },
+    upgrades: { cigs: 0, portal: 0 },
     nextAnimal: 11,
+    // herds: the counts behind the scene, per species. leased cows are away with the aliens. acc
+    // holds the fractional births, growing up, deaths and product not yet whole.
+    herds: Object.fromEntries(KINDS.map((k) => [k, {
+      females: { cow: 3, chicken: 4 }[k] ?? 0,
+      males: { cow: 1, chicken: 1 }[k] ?? 0,
+      young: 0,
+      leased: 0,
+      tier: 0,
+      acc: { birth: 0, grow: 0, death: 0, product: 0 },
+    }])),
+    herdEvents: [],   // {kind, type: 'birth'|'grow'|'death'|'buy', count, sex?}; herds.js adds, animals.js clears
+    land: 1,          // parcels owned, from the left
+    camera: { x: 0 },
+    carrots: { gloves: 0, hoe: 0, fertilizer: 0, combines: 0, acc: 0, combineX: FIELD.x },
+    aliens: { batches: [], saucers: [], lastDay: 0 },
+    flock: [],        // the sheep and goats drawn in the scene; flock.js keeps it in step with the herds
     farmer: { x: 38, y: 84, facing: 'right', state: 'idle', task: null, target: null,
               timer: 2, frame: 0, hidden: false, cigsToday: 0, day: 1 },
     animals,
@@ -99,25 +111,7 @@ export function createWorld(seed) {
     bubbles: [],
     effects: [],
     log: [],
-    ufos: [],
-    ufoLastDay: 0,
   };
-}
-
-// isAdult is true for the pig and for a cow or chicken whose age has reached ADULT_AGE.
-export function isAdult(a) {
-  return a.kind === 'pig' || a.age >= ADULT_AGE[a.kind];
-}
-
-// herdSize counts the living animals of a kind, abducted ones included.
-export function herdSize(world, kind) {
-  return world.animals.filter((a) => a.kind === kind).length;
-}
-
-// capacity is how many animals of a kind the farm has room for now.
-export function capacity(world, kind) {
-  const h = HERD[kind];
-  return Math.min(h.max, h.base + h.step * world.upgrades[h.upgrade]);
 }
 
 // productivity multiplies what the animals make: milk and eggs. Alien pay is a flat rate.
@@ -126,13 +120,35 @@ export function productivity(world) {
   return CIG_BOOST ** u.cigs * (u.portal ? PORTAL_BOOST : 1);
 }
 
-// money formats an amount of coins for the 3x5 font: whole coins below 10000, then 12.3K, 4.5M, 6.7B.
+// money formats an amount of coins, or a count, for the 3x5 font: whole numbers below 10000,
+// then 12.3K, 4.5M, 6.7B, 8.9T and 1.2QA, rounded down.
 export function money(n) {
   const v = Math.max(0, n);
   if (v < 1e4) return String(Math.floor(v));
-  if (v < 1e6) return `${(Math.floor(v / 100) / 10).toFixed(1)}K`;
-  if (v < 1e9) return `${(Math.floor(v / 1e5) / 10).toFixed(1)}M`;
-  return `${(Math.floor(v / 1e8) / 10).toFixed(1)}B`;
+  const units = [[1e15, 'QA'], [1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
+  const [size, suffix] = units.find(([u]) => v >= u);
+  return `${(Math.floor((v / size) * 10) / 10).toFixed(1)}${suffix}`;
+}
+
+// herdTotal counts every animal of a herd: adults, young and those leased to the aliens.
+export function herdTotal(world, kind) {
+  const h = world.herds[kind];
+  return h.females + h.males + h.young + h.leased;
+}
+
+// housingCapacity is how many animals of a kind the herd's current housing tier holds.
+export function housingCapacity(world, kind) {
+  return SPECIES[kind].tiers[world.herds[kind].tier].capacity;
+}
+
+// hasKind is true when the farm owns the parcel where a species lives.
+export function hasKind(world, kind) {
+  return SPECIES[kind].parcel < world.land;
+}
+
+// landWidth is the width in units of the land the farm owns; the camera pans across it.
+export function landWidth(world) {
+  return world.land * PARCEL_W;
 }
 
 // setClock derives day and clock from world.time.

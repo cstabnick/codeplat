@@ -4,15 +4,17 @@
 // so that animals and the farmer can pass in front of and behind them. Nothing here touches
 // window or document on load, and nothing uses Math.random, so every frame draws the same picture.
 
-import { WIDTH, HEIGHT, HORIZON, HOUSE, DOOR, WINDOWS, COOP, YARD, BARN, PASTURE, MUD } from './state.js';
+import { WIDTH, HEIGHT, HORIZON, HOUSE, DOOR, WINDOWS, COOP, YARD, BARN, PASTURE, MUD, MEADOW, HILL, landWidth, money } from './state.js';
+import { LAND, PARCEL_W } from './species.js';
 import { PALETTE, drawSprite, drawText } from './pixel.js';
 
-// rect fills a box of one palette colour. It is clipped to the canvas, so nothing is drawn
-// outside it, and an empty box draws nothing.
+// rect fills a box of one palette colour. It is clipped to y in 0..HEIGHT and to x >= 0, but not
+// to the first parcel's width, because the land is wider than the canvas and the camera pans
+// across it. An empty box draws nothing.
 function rect(ctx, key, x, y, w, h) {
   const x0 = Math.max(0, x);
   const y0 = Math.max(0, y);
-  const x1 = Math.min(WIDTH, x + w);
+  const x1 = x + w;
   const y1 = Math.min(HEIGHT, y + h);
   if (x1 <= x0 || y1 <= y0) return;
   ctx.fillStyle = PALETTE[key];
@@ -55,16 +57,36 @@ function drawYard(ctx) {
   }
 }
 
-// drawGround fills y HORIZON..HEIGHT with grass ('3' with 'b' tufts), then the dirt paths, the
-// mud puddle, the yard and the back rail of the pasture fence. Every rectangle it draws starts
-// at or below HORIZON. The world is not read: the ground is the same for every world.
+// drawMound paints a grass mound across the hill as a dome of '3' rows, 12 rows high, centred on
+// x 756 (HILL.x + 100) and rising from the hill's top at HILL.y - 12. The dome is the same colour
+// as the grass around it, so a 'b' highlight on its upper left shoulder (rows 8 and 9, inside the
+// dome's outline) makes the shape show.
+function drawMound(ctx) {
+  const cx = HILL.x + 100;
+  for (let k = 0; k <= 11; k++) {
+    const half = Math.round(Math.sqrt(144 - (12 - k) ** 2));
+    rect(ctx, '3', cx - half, HILL.y - 12 + k, 2 * half + 1, 1);
+  }
+  rect(ctx, 'b', cx - 9, HILL.y - 12 + 8, 6, 2);
+}
+
+// drawGround fills y HORIZON..HEIGHT with grass ('3' with 'b' tufts) across all the land the farm
+// owns, then the dirt paths, the mud puddle, the yard and the back rail of the pasture fence.
+// Every rectangle it draws starts at or below HORIZON. A missing world is land 1.
 export function drawGround(ctx, world) {
-  rect(ctx, '3', 0, HORIZON, WIDTH, HEIGHT - HORIZON);
+  const land = world ? world.land : 1;
+  const width = land * PARCEL_W;
+  rect(ctx, '3', 0, HORIZON, width, HEIGHT - HORIZON);
   for (let y = HORIZON; y < HEIGHT - 1; y++) {
-    for (let x = 0; x < WIDTH; x++) {
+    for (let x = 0; x < width; x++) {
       if (speck(x, y, 60) === 0) rect(ctx, 'b', x, y, 1, 2);
     }
   }
+
+  // Land 2 and up have a dirt path running right from the first parcel's edge, and land 3 has a
+  // grassy mound across the hill.
+  if (land >= 2) rect(ctx, '4', PARCEL_W, 92, width - PARCEL_W, 4);
+  if (land >= 3) drawMound(ctx);
 
   // The path from the front door down to y 88, then the road along y 86..92 from x 30 to 300.
   const doorPathX = DOOR.x - 3;
@@ -227,25 +249,26 @@ function drawMailbox(ctx) {
   rect(ctx, '8', fx + 10, fy - 18, 2, 3);
 }
 
-// drawPastureFront draws the front rail along the bottom edge of the pasture, with posts.
-function drawPastureFront(ctx) {
-  const bottom = PASTURE.y + PASTURE.h - 1;
-  rect(ctx, '4', PASTURE.x, bottom, PASTURE.w, 1);
-  rect(ctx, 'f', PASTURE.x, bottom - 3, PASTURE.w, 1);
-  for (let x = PASTURE.x; x < PASTURE.x + PASTURE.w; x += 12) {
+// drawFenceFront draws the front rail along the bottom edge of a fenced area, with posts.
+function drawFenceFront(ctx, area) {
+  const bottom = area.y + area.h - 1;
+  rect(ctx, '4', area.x, bottom, area.w, 1);
+  rect(ctx, 'f', area.x, bottom - 3, area.w, 1);
+  for (let x = area.x; x < area.x + area.w; x += 12) {
     rect(ctx, '4', x, bottom - 7, 1, 8);
   }
 }
 
-// drawPastureSides draws the left and right sides of the pasture fence. The left side has a
-// gate gap 14 units tall between y 126 and 140.
-function drawPastureSides(ctx) {
-  const top = PASTURE.y;
-  const bottom = PASTURE.y + PASTURE.h - 1;
-  const gateTop = 126;
-  const gateBottom = 140;
-  const left = PASTURE.x;
-  const right = PASTURE.x + PASTURE.w - 1;
+// drawFenceSides draws the left and right sides of a fenced area. A gate, if given as {top,
+// bottom}, is a gap in the left side between those y values; null means no gap.
+function drawFenceSides(ctx, area, gate) {
+  const top = area.y;
+  const bottom = area.y + area.h - 1;
+  // With no gate the gap is empty: it starts and ends below the bottom of the fence.
+  const gateTop = gate ? gate.top : bottom + 1;
+  const gateBottom = gate ? gate.bottom : bottom + 1;
+  const left = area.x;
+  const right = area.x + area.w - 1;
 
   rect(ctx, '4', left, top, 1, gateTop - top);
   rect(ctx, '4', left, gateBottom, 1, bottom - gateBottom + 1);
@@ -263,9 +286,35 @@ function drawPastureSides(ctx) {
   }
 }
 
+// PASTURE_GATE is the gap in the pasture's left side, between y 126 and 140.
+const PASTURE_GATE = { top: 126, bottom: 140 };
+
+// drawFenceFor returns the drawables of a fence around a paddock: its front rail and its sides.
+// Each has the base line of the paddock's bottom edge.
+function drawFenceFor(area, gate) {
+  const base = area.y + area.h;
+  return [
+    { y: base, draw: (ctx) => drawFenceFront(ctx, area) },
+    { y: base, draw: (ctx) => drawFenceSides(ctx, area, gate) },
+  ];
+}
+
+// drawSign draws the FOR SALE sign for the next parcel, at the right edge of the land the farm
+// owns: a post, a '0' outline, a '7' board, and the price in '0' under the words.
+function drawSign(ctx, world) {
+  const x0 = landWidth(world) - 40;
+  rect(ctx, '4', x0 + 16, 116, 2, 12);
+  rect(ctx, '0', x0 - 1, 103, 38, 18);
+  rect(ctx, '7', x0, 104, 36, 16);
+  drawText(ctx, 'FOR SALE', x0 + 2, 107, PALETTE['0']);
+  drawText(ctx, `$${money(LAND[world.land].cost)}`, x0 + 2, 113, PALETTE['0']);
+}
+
 // sceneDrawables returns the standing scenery as {y, draw(ctx)}, where y is the base line (the
 // bottom edge) used to sort it with characters. Items that draw later with a greater y appear
-// in front of the ones that come before them.
+// in front of the ones that come before them. The barn and the coop are left out once their
+// herd's housing has moved up a tier; the housing drawables take their place. Each fence is
+// drawn once the farm owns its parcel, and the FOR SALE sign while there is a parcel to buy.
 export function sceneDrawables(world) {
   const trees = [
     { x: 96, y: 66 },
@@ -273,14 +322,17 @@ export function sceneDrawables(world) {
     { x: 214, y: 70 },
   ].map((t) => ({ y: t.y, draw: (ctx) => drawTree(ctx, t.x, t.y) }));
 
-  return [
-    { y: HOUSE.y + HOUSE.h, draw: drawHouse },
-    { y: BARN.y + BARN.h, draw: drawBarn },
-    { y: COOP.y + COOP.h, draw: drawCoop },
+  const items = [{ y: HOUSE.y + HOUSE.h, draw: drawHouse }];
+  if (world.herds.cow.tier === 0) items.push({ y: BARN.y + BARN.h, draw: drawBarn });
+  if (world.herds.chicken.tier === 0) items.push({ y: COOP.y + COOP.h, draw: drawCoop });
+  items.push(
     ...trees,
     { y: 140, draw: drawScarecrow },
     { y: 90, draw: drawMailbox },
-    { y: PASTURE.y + PASTURE.h, draw: drawPastureFront },
-    { y: PASTURE.y + PASTURE.h, draw: drawPastureSides },
-  ];
+    ...drawFenceFor(PASTURE, PASTURE_GATE),
+  );
+  if (world.land >= 2) items.push(...drawFenceFor(MEADOW, null));
+  if (world.land >= 3) items.push(...drawFenceFor(HILL, null));
+  if (LAND[world.land]) items.push({ y: 128, draw: (ctx) => drawSign(ctx, world) });
+  return items;
 }

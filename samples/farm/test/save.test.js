@@ -55,16 +55,14 @@ test('away is 0 when savedAt is not a number', () => {
   assert.equal(loadWorld(storage, 999999).away, 0);
 });
 
-test('a save missing upgrades.coop and stats.births loads them as 0', () => {
+test('a save missing stats.births and upgrades.cigs loads them as 0', () => {
   const storage = memoryStorage();
   const world = createWorld(5);
-  delete world.upgrades.coop;
   delete world.stats.births;
   storage.setItem(SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, savedAt: 0, world }));
 
   const loaded = loadWorld(storage, 0);
   assert.ok(loaded);
-  assert.equal(loaded.world.upgrades.coop, 0);
   assert.equal(loaded.world.stats.births, 0);
   assert.equal(loaded.world.upgrades.cigs, 0);
 });
@@ -115,4 +113,69 @@ test('a loaded world that was paused is unpaused', () => {
   world.paused = true;
   saveWorld(storage, world, 0);
   assert.equal(loadWorld(storage, 0).world.paused, false);
+});
+
+test('version 2 round trip keeps herds, carrots, aliens and land', () => {
+  const storage = memoryStorage();
+  const world = createWorld(11);
+  world.herds.cow.females = 2e6;
+  world.herds.cow.tier = 6;
+  world.carrots.combines = 12;
+  world.land = 3;
+  world.aliens.batches.push({ x: 40, y: 30, count: 5, ttl: 9 });
+
+  assert.equal(saveWorld(storage, world, 0), true);
+  const loaded = loadWorld(storage, 0);
+
+  assert.ok(loaded);
+  assert.equal(loaded.world.herds.cow.females, 2e6);
+  assert.equal(loaded.world.herds.cow.tier, 6);
+  assert.equal(loaded.world.carrots.combines, 12);
+  assert.equal(loaded.world.land, 3);
+  assert.deepEqual(loaded.world.aliens.batches, [{ x: 40, y: 30, count: 5, ttl: 9 }]);
+  assert.deepEqual(loaded.world, world);
+});
+
+test('a version 2 save missing herds.goat loads goat with the defaults', () => {
+  const storage = memoryStorage();
+  const world = createWorld(12);
+  delete world.herds.goat;
+  storage.setItem(SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, savedAt: 0, world }));
+
+  const loaded = loadWorld(storage, 0);
+  assert.ok(loaded);
+  assert.deepEqual(loaded.world.herds.goat, createWorld(12).herds.goat);
+  assert.equal(loaded.world.herds.goat.acc.birth, 0);
+  assert.equal(loaded.world.herds.goat.females, 0);
+});
+
+test('a version 2 save whose herds.cow.acc lacks product loads product as 0', () => {
+  const storage = memoryStorage();
+  const world = createWorld(13);
+  world.herds.cow.acc = { birth: 0.5, grow: 0.25, death: 0 };
+  storage.setItem(SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, savedAt: 0, world }));
+
+  const loaded = loadWorld(storage, 0);
+  assert.ok(loaded);
+  assert.equal(loaded.world.herds.cow.acc.product, 0);
+  assert.equal(loaded.world.herds.cow.acc.birth, 0.5);
+  assert.equal(loaded.world.herds.cow.acc.grow, 0.25);
+  assert.equal(loaded.world.herds.cow.acc.death, 0);
+});
+
+test('herdEvents is [] after loading even if the save had some', () => {
+  const storage = memoryStorage();
+  const world = createWorld(14);
+  world.herdEvents = [{ kind: 'cow', type: 'birth', count: 2, sex: 'female' }];
+  saveWorld(storage, world, 0);
+
+  const loaded = loadWorld(storage, 0);
+  assert.ok(loaded);
+  assert.deepEqual(loaded.world.herdEvents, []);
+});
+
+test('a version 1 save returns null', () => {
+  const storage = memoryStorage();
+  storage.setItem(SAVE_KEY, JSON.stringify({ version: 1, savedAt: 0, world: createWorld(15) }));
+  assert.equal(loadWorld(storage, 0), null);
 });

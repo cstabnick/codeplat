@@ -7,11 +7,12 @@ import { makeRng } from '../web/js/rng.js';
 const WANT_KINDS = [
   'gossip', 'innocent', 'smoke', 'sneak', 'cough', 'excuse', 'farmer',
   'harvest', 'morning', 'night', 'chicken', 'pig', 'ufo', 'click',
-  'shop', 'birth', 'death',
+  'shop', 'birth', 'death', 'bull', 'rooster', 'sheep', 'goat', 'pluck',
+  'tier', 'land',
 ];
 
-test('KINDS is exactly the 17 kinds in the contract', () => {
-  assert.equal(KINDS.length, 17);
+test('KINDS is exactly the 24 kinds in the contract', () => {
+  assert.equal(KINDS.length, 24);
   assert.deepEqual([...KINDS].sort(), [...WANT_KINDS].sort());
 });
 

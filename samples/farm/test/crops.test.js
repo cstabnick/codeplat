@@ -201,3 +201,15 @@ test('a non-ripe crop never draws the glint', () => {
   cropDrawables(worldWith([p], 0))[0].draw(ctx);
   assert.ok(!ctx.calls.some((c) => c.op === 'set' && c.name === 'fillStyle' && c.value === '#fff1e8'));
 });
+
+test('fertilizer 2 makes a watered plot grow 2.25x as fast', () => {
+  const plain = plot({ growth: 0, water: 1 });
+  const wPlain = worldWith([plain]);
+  updateCrops(wPlain, 1);
+  const fertile = plot({ growth: 0, water: 1 });
+  const wFert = worldWith([fertile]);
+  wFert.carrots.fertilizer = 2;
+  updateCrops(wFert, 1);
+  near(fertile.growth, plain.growth * 2.25);
+  near(fertile.growth, 2.25 / 40);
+});

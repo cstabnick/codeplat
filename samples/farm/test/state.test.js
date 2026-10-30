@@ -11,12 +11,14 @@ import {
   logEvent,
   puff,
   DAY_LENGTH,
-  isAdult,
-  herdSize,
-  capacity,
   productivity,
   money,
+  herdTotal,
+  housingCapacity,
+  hasKind,
+  landWidth,
 } from '../web/js/state.js';
+import { SPECIES, KINDS, LAND } from '../web/js/species.js';
 import { fakeCtx } from './fakectx.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
@@ -49,15 +51,15 @@ test('createWorld has the animals, plots and clock from the contract', () => {
 
   assert.equal(w.plots.length, 18);
   for (const p of w.plots) {
-    assert.equal(p.crop, ['carrot', 'corn', 'pumpkin'][p.col % 3]);
+    assert.equal(p.crop, 'carrot');
     assert.equal(p.water, 0.5);
     const growth = ((p.col * 7 + p.row * 3) % 10) / 10;
     assert.equal(p.growth, growth);
     assert.equal(p.stage, growth >= 1 ? 3 : Math.floor(growth * 3));
   }
-  // row-major: first plot is (0,0); (1,0) has growth 0.7, stage 2, corn.
+  // row-major: first plot is (0,0); (1,0) has growth 0.7, stage 2.
   assert.deepEqual(w.plots[0], { col: 0, row: 0, crop: 'carrot', growth: 0, stage: 0, water: 0.5 });
-  assert.deepEqual(w.plots[1], { col: 1, row: 0, crop: 'corn', growth: 0.7, stage: 2, water: 0.5 });
+  assert.deepEqual(w.plots[1], { col: 1, row: 0, crop: 'carrot', growth: 0.7, stage: 2, water: 0.5 });
   assert.equal(w.plots[6].row, 1);
   assert.equal(w.plots[6].col, 0);
 
@@ -66,29 +68,13 @@ test('createWorld has the animals, plots and clock from the contract', () => {
   assert.equal(w.clock, 0);
   assert.deepEqual(w.stats, {
     cigarettes: 0, gossip: 0, harvests: 0, abductions: 0, milk: 0, eggs: 0, births: 0, deaths: 0,
+    plucks: 0,
   });
   assert.deepEqual(w.log, []);
   assert.deepEqual(w.bubbles, []);
   assert.deepEqual(w.effects, []);
-  assert.deepEqual(w.ufos, []);
   assert.equal(w.coins, 10);
-  assert.deepEqual(w.upgrades, { cigs: 0, pasture: 0, coop: 0, portal: 0 });
-});
-
-test('herd helpers: isAdult, herdSize and capacity', () => {
-  const w = createWorld(1);
-  assert.equal(herdSize(w, 'cow'), 4);
-  assert.equal(capacity(w, 'cow'), 6);
-  w.upgrades.pasture = 2;
-  assert.equal(capacity(w, 'cow'), 12);
-  w.upgrades.pasture = 99;
-  assert.equal(capacity(w, 'cow'), 24, 'capped at max');
-  const cow = w.animals[0];
-  cow.age = 59;
-  assert.equal(isAdult(cow), false);
-  cow.age = 60;
-  assert.equal(isAdult(cow), true);
-  assert.equal(isAdult(w.animals.find((a) => a.kind === 'pig')), true);
+  assert.deepEqual(w.upgrades, { cigs: 0, portal: 0 });
 });
 
 test('productivity is 1.25 per pack of cigs, doubled by the portal', () => {
@@ -107,6 +93,9 @@ test('money: whole coins, then K, M and B with one decimal, rounded down', () =>
   assert.equal(money(12345), '12.3K');
   assert.equal(money(4560000), '4.5M');
   assert.equal(money(7.89e9), '7.8B');
+  assert.equal(money(8.95e12), '8.9T');
+  assert.equal(money(1.25e15), '1.2QA');
+  assert.equal(money(999999), '999.9K');
   assert.equal(money(-5), '0');
 });
 
@@ -239,4 +228,39 @@ test('fakeCtx records method calls and property sets and counts them', () => {
   ctx.count('fillRect');
   assert.equal(ctx.calls.length, before, 'count itself is not recorded');
   assert.equal(ctx.count('nothing'), 0);
+});
+
+test('herds start with 3 cows and a bull, 4 hens and a cock, and nothing on unbought land', () => {
+  const w = createWorld(1);
+  assert.deepEqual(Object.keys(w.herds), KINDS);
+  assert.deepEqual(
+    { f: w.herds.cow.females, m: w.herds.cow.males, y: w.herds.cow.young, l: w.herds.cow.leased, t: w.herds.cow.tier },
+    { f: 3, m: 1, y: 0, l: 0, t: 0 },
+  );
+  assert.equal(herdTotal(w, 'chicken'), 5);
+  assert.equal(herdTotal(w, 'sheep'), 0);
+  assert.equal(housingCapacity(w, 'cow'), 10);
+  w.herds.cow.tier = SPECIES.cow.tiers.length - 1;
+  assert.equal(SPECIES.cow.tiers[w.herds.cow.tier].name, 'Burj Moolifa');
+  assert.ok(housingCapacity(w, 'cow') >= 1e6, 'the top tier holds millions');
+  assert.equal(hasKind(w, 'cow'), true);
+  assert.equal(hasKind(w, 'sheep'), false);
+  w.land = 2;
+  assert.equal(hasKind(w, 'sheep'), true);
+  assert.equal(landWidth(w), 640);
+  assert.deepEqual(w.camera, { x: 0 });
+  assert.deepEqual(w.herdEvents, []);
+});
+
+test('species data: tiers grow in capacity and cost, and every species has a parcel', () => {
+  for (const kind of KINDS) {
+    const s = SPECIES[kind];
+    assert.equal(s.tiers[0].cost, 0, `${kind} starts with free housing`);
+    for (let i = 1; i < s.tiers.length; i++) {
+      assert.ok(s.tiers[i].capacity > s.tiers[i - 1].capacity, `${kind} tier ${i} capacity`);
+      assert.ok(s.tiers[i].cost > s.tiers[i - 1].cost, `${kind} tier ${i} cost`);
+    }
+    assert.ok(s.parcel < LAND.length, `${kind} lives on a parcel that exists`);
+  }
+  assert.equal(SPECIES.chicken.tiers.at(-1).name, 'Burj Al Hen');
 });

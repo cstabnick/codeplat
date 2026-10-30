@@ -101,6 +101,7 @@
   .shop h2 { margin: 0; font-size: 16px; color: var(--gold); text-shadow: 2px 2px 0 var(--ink); }
   .shop-say { margin: 8px 0 10px; min-height: 1.4em; font-size: 13px; color: #ff77a8; }
   .shop-say::before { content: '\1F451  '; }
+  .shop h3 { margin: 10px 0 4px; font-size: 13px; color: var(--gold); }
   .shop ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
   .shop li {
     display: flex; gap: 12px; align-items: center; justify-content: space-between;
@@ -111,6 +112,7 @@
   .item-text .owned { font-size: 12px; color: #29adff; }
   .item-text p { margin: 4px 0 0; font-size: 12px; line-height: 1.4; color: var(--btn-face); }
   .item-buy { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+  .buy-group { display: flex; gap: 4px; }
   .item-buy .note { font-size: 11px; color: #ff004d; min-height: 1em; }
   .shop button {
     font: inherit; font-weight: bold; font-size: 13px; padding: 6px 10px; color: var(--ink);
@@ -138,6 +140,8 @@
     <button type="button" id="speed-2">2x</button>
     <button type="button" id="speed-4">4x</button>
     <button type="button" id="skip">Skip to night/morning</button>
+    <button type="button" id="pan-left">&lt; Pan</button>
+    <button type="button" id="pan-right">Pan &gt;</button>
     <button type="button" id="shop-open">Visit the pig</button>
     <button type="button" id="reset">New farm</button>
   </div>
@@ -147,9 +151,9 @@
       <button type="button" id="shop-close" aria-label="Close the shop">X</button>
     </div>
     <p id="shop-say" class="shop-say" aria-live="polite"></p>
-    <ul id="shop-items"></ul>
+    <div id="shop-items"></div>
   </section>
-  <p class="hint">Cows give milk and hens lay eggs while you watch; both have young and grow old. Click the pig (he is a prince) to shop. Click an animal to hear what it's really thinking. Keys: Space, 1/2/4, N, S. Psst: try U after dark, or F.</p>
+  <p class="hint">Cows give milk and hens lay eggs while you watch; both have young and grow old. Click the pig (he is a prince) to shop. Click an animal to hear what it's really thinking. Drag or use the arrow keys to pan, click the field to pluck carrots. Keys: Space, 1/2/4, N, S. Psst: try U after dark, or F.</p>
 </main>
 <script type="module" src="js/main.js"></script>
 </body>

@@ -1,11 +1,11 @@
 // The animals: cows that gossip in whispers when Farmer Gary is not looking, chickens that peck and
 // sometimes panic, and a pig that wallows in the mud and is secretly a prince from another
-// dimension. Cows and chickens are born small, grow up, have young while there is room, and die
-// of old age. Imports only state.js and pixel.js; it touches no window or document on load.
+// dimension. The cows and chickens drawn here are a sample of their herds (herds.js owns the
+// counts): bulls and cocks stand among them, and births, deaths and purchases show as hearts,
+// ghosts and portals. Imports only state.js and pixel.js; it touches no window or document on load.
 
 import {
-  PASTURE, YARD, MUD, ADULT_AGE, farmerSees, isNight, isAdult, herdSize, capacity, say, logEvent,
-  puff,
+  PASTURE, YARD, MUD, farmerSees, isNight, hourOf, herdTotal, money, say, logEvent, puff,
 } from './state.js';
 import { drawSprite, spriteSize } from './pixel.js';
 
@@ -58,6 +58,43 @@ const CHICKEN_PECK = [
   '...9.9..',
 ];
 const CHICKEN_STEP = CHICKEN.slice(0, 7).concat(['..9..9..']);
+
+// A bull is a cow with a brown body, no udder and white horns on the head row. Its legs are brown
+// too, so its walk frame is made from its own rows.
+const BULL = COW.map((row, r) => {
+  let s = row.replace(/7/g, '4');
+  if (r === 8) s = s.replace(/e/g, '4');
+  if (r === 0) s = s.replace(/6/g, '7');
+  return s;
+});
+const BULL_LEGS_STEP = COW_LEGS_STEP.map((row) => row.replace(/7/g, '4'));
+const BULL_STEP = BULL.slice(0, 9).concat(BULL_LEGS_STEP);
+
+// A cock is a hen with a two-row red comb and tail feathers on the left, one row taller than a hen.
+const COCK = [
+  '.....8..',
+  '....88..',
+  '....777.',
+  '....7079',
+  'c...777.',
+  '9777777.',
+  '.777777.',
+  '..7777..',
+  '...9.9..',
+];
+const COCK_PECK = [
+  '........',
+  '.....8..',
+  '....88..',
+  '....777.',
+  'c...7079',
+  '9777777.',
+  '.777777.',
+  '..7777..',
+  '...9.9..',
+];
+const COCK_STEP = COCK.slice(0, 8).concat(['..9..9..']);
+
 // A pig in mud: the bottom two rows and a few splotches are mud-brown.
 const MUDDY_PIG = PIG.map((row, r) =>
   Array.from(row)
@@ -88,16 +125,19 @@ const CHICK = [
 ];
 const CROWN = ['a.a.a', 'aaaaa'];
 
-// How long each kind lives and how often an adult has young, in seconds: [min, max).
 // Gossip: a hidden pair of cows starts one at GOSSIP_RATE per second, it lasts GOSSIP_SECONDS, and
 // the pair take turns to whisper every GOSSIP_BEAT seconds.
 const GOSSIP_RATE = 0.15;
 const GOSSIP_SECONDS = 7;
 const GOSSIP_BEAT = 2.4;
 
-const LIFE = { cow: [900, 1260], chicken: [540, 720] };
-const BREED = { cow: [150, 240], chicken: [80, 140] };
-const YOUNG = { cow: 'CALF', chicken: 'CHICK' };
+// VISIBLE is how many of each kind the scene draws at most, the rest of the herd being off-stage.
+export const VISIBLE = { cow: 12, chicken: 14 };
+
+// LIFE_GAP is how many seconds of world time must pass between two gated bubbles about life and
+// death (births and the death group).
+const LIFE_GAP = 6;
+
 const HEAVEN = { cow: 'PASTURE', chicken: 'COOP' };
 const NAMES = {
   cow: [
@@ -132,10 +172,21 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 const feetY = (a) => a.y - a.lift;
 
-// baseRows is the standing sprite for an animal's kind and age.
+// isMale is true for an adult male. A missing sex counts as female.
+function isMale(a) {
+  return !a.young && a.sex === 'male';
+}
+
+// baseRows is the standing sprite for an animal's kind, sex and youth.
 function baseRows(a) {
-  if (a.kind === 'cow') return isAdult(a) ? COW : CALF;
-  if (a.kind === 'chicken') return isAdult(a) ? CHICKEN : CHICK;
+  if (a.kind === 'cow') {
+    if (a.young) return CALF;
+    return isMale(a) ? BULL : COW;
+  }
+  if (a.kind === 'chicken') {
+    if (a.young) return CHICK;
+    return isMale(a) ? COCK : CHICKEN;
+  }
   return PIG;
 }
 
@@ -197,7 +248,8 @@ function faceEachOther(a, b) {
 }
 
 // startGossip begins a gossip between a and another cow the farmer cannot see, if one is near.
-// Both cows are added to done so that this update does not move either of them again.
+// Both cows are added to done so that this update does not move either of them again. The first
+// whisper is by a bull a third of the time, when the lower id is a bull.
 function startGossip(world, a, dt, rng, line, done) {
   if (farmerSees(world, a.x, a.y)) return false;
   const b = world.animals.find(
@@ -226,7 +278,8 @@ function startGossip(world, a, dt, rng, line, done) {
   logEvent(world, `${first.name.toUpperCase()} AND ${second.name.toUpperCase()} ARE GOSSIPING`);
 
   const lower = a.id < b.id ? a : b;
-  bubble(world, lower, line('gossip'), 'whisper', 2.2);
+  const bullSpeaks = isMale(lower) && rng.chance(0.3);
+  bubble(world, lower, line(bullSpeaks ? 'bull' : 'gossip'), 'whisper', 2.2);
   done.add(a.id);
   done.add(b.id);
   return true;
@@ -369,6 +422,12 @@ function updateChicken(world, a, dt, rng, line) {
     return;
   }
 
+  // A cock crows once in a while between 6 and 6:30 in the morning while it is awake.
+  const hour = hourOf(world);
+  if (isMale(a) && hour >= 6 && hour < 6.5 && rng.chance(0.2 * dt)) {
+    bubble(world, a, line('rooster'), 'speech');
+  }
+
   if (a.state === 'panic') {
     updatePanic(world, a, dt, rng);
     return;
@@ -456,7 +515,8 @@ function pickName(world, kind, rng) {
 }
 
 // addAnimal puts a new cow or chicken on the farm and returns it. Without opts.x and opts.y it
-// stands at a random spot in its area; opts.age is its age in seconds, an adult's by default.
+// stands at a random spot in its area. opts.sex is 'female' or 'male' and opts.young says whether
+// it is a calf or chick; they default to a female adult.
 export function addAnimal(world, kind, rng, opts = {}) {
   const box = kind === 'cow' ? COW_BOX : CHICKEN_BOX;
   const a = {
@@ -474,57 +534,156 @@ export function addAnimal(world, kind, rng, opts = {}) {
     noticed: world.stats.cigarettes,
     lift: 0,
     abducted: false,
-    age: opts.age ?? ADULT_AGE[kind],
-    life: rng.range(...LIFE[kind]),
-    breed: rng.range(...BREED[kind]),
+    sex: opts.sex ?? 'female',
+    young: opts.young ?? false,
   };
   world.nextAnimal += 1;
   world.animals.push(a);
   return a;
 }
 
-// age ages a cow or chicken by dt. It returns true when the animal has died, for the caller to
-// remove.
-function age(world, a, dt, line) {
-  a.age += dt;
-  if (a.age < a.life) return false;
-  world.stats.deaths += 1;
-  bubble(world, a, line('death'), 'speech', 4);
-  puff(world, 'ghost', a.x - 2, feetY(a) - heightOf(a), 0, -8, 3);
-  logEvent(world, `${a.name.toUpperCase()} WENT TO THE BIG ${HEAVEN[a.kind]} IN THE SKY`);
-  return true;
+// gateOpen is true when a gated bubble or log line may show now.
+function gateOpen(world) {
+  return world.time >= (world.lifeQuietUntil ?? 0);
 }
 
-// breed counts down an adult's breeding timer by dt. When it runs out, the adult has young if
-// another adult of its kind is on the ground and the farm has room. The dead of this update are
-// already gone, so they are neither mates nor counted in the herd.
-function breed(world, a, dt, rng, line) {
-  if (!isAdult(a)) return;
-  a.breed -= dt;
-  if (a.breed > 0) return;
-  a.breed = rng.range(...BREED[a.kind]);
-  if (herdSize(world, a.kind) >= capacity(world, a.kind)) return;
-  const mate = world.animals.some((o) => o !== a && o.kind === a.kind && !o.abducted && isAdult(o));
-  if (!mate) return;
+// closeGate starts the quiet time after a gated line has shown.
+function closeGate(world) {
+  world.lifeQuietUntil = world.time + LIFE_GAP;
+}
 
-  const baby = addAnimal(world, a.kind, rng, { x: a.x + rng.range(-10, 10), y: a.y + rng.range(-4, 4), age: 0 });
-  world.stats.births += 1;
-  puff(world, 'heart', a.x - 2, feetY(a) - heightOf(a) - 4, 0, -6, 1.5);
-  bubble(world, a, line('birth'), 'speech');
-  logEvent(world, `${a.name.toUpperCase()} HAD A ${YOUNG[a.kind]}: ${baby.name.toUpperCase()}`);
+// visibleOf lists the animals of a kind in the scene.
+function visibleOf(world, kind) {
+  return world.animals.filter((a) => a.kind === kind);
+}
+
+// birthEvent puts a heart over a visible female of the kind and, if the gate is open, says the
+// birth line over her.
+function birthEvent(world, kind, rng, line) {
+  const mothers = visibleOf(world, kind).filter((a) => !isMale(a));
+  if (mothers.length === 0) return;
+  const mother = rng.pick(mothers);
+  puff(world, 'heart', mother.x - 2, feetY(mother) - heightOf(mother) - 4, 0, -6, 1.5);
+  if (!gateOpen(world)) return;
+  bubble(world, mother, line('birth'), 'speech');
+  closeGate(world);
+}
+
+// deathGroup puts a ghost over a visible adult of the kind that is not abducted, says the death
+// line over it and logs the deaths of this update. A closed gate or no such adult drops it all.
+function deathGroup(world, kind, count, rng, line) {
+  if (!gateOpen(world)) return;
+  const adults = visibleOf(world, kind).filter((a) => !a.young && !a.abducted);
+  if (adults.length === 0) return;
+  const a = rng.pick(adults);
+  puff(world, 'ghost', a.x - 2, feetY(a) - heightOf(a), 0, -8, 3);
+  bubble(world, a, line('death'), 'speech', 4);
+  const more = count > 1 ? ` AND ${money(count - 1)} MORE` : '';
+  logEvent(world, `${a.name.toUpperCase()} WENT TO THE BIG ${HEAVEN[kind]} IN THE SKY${more}`);
+  closeGate(world);
+}
+
+// herdEventsStep reads the herd events of this update, then clears them. Grow events are ignored.
+// Each death group is handled once per kind, with the sum of its deaths.
+function herdEventsStep(world, rng, line) {
+  const events = world.herdEvents;
+  world.herdEvents = [];
+  const handled = new Set();
+  for (const ev of events) {
+    if (ev.kind !== 'cow' && ev.kind !== 'chicken') continue;
+    if (ev.type === 'birth') {
+      birthEvent(world, ev.kind, rng, line);
+    } else if (ev.type === 'buy') {
+      const list = visibleOf(world, ev.kind);
+      if (list.length === 0) continue;
+      const a = rng.pick(list);
+      puff(world, 'portal', a.x, feetY(a) - heightOf(a) / 2, 0, -4, 1.5);
+    } else if (ev.type === 'death' && !handled.has(ev.kind)) {
+      handled.add(ev.kind);
+      const count = events
+        .filter((e) => e.type === 'death' && e.kind === ev.kind)
+        .reduce((sum, e) => sum + e.count, 0);
+      deathGroup(world, ev.kind, count, rng, line);
+    }
+  }
+}
+
+// dropAnimals removes up to n animals of a group, newest first. It never removes an abducted one,
+// and it removes a gossiping one only when no other in the group can go.
+function dropAnimals(world, group, n) {
+  const newest = group.slice().reverse();
+  const victims = new Set();
+  // First pass spares gossiping animals; the second pass allows them.
+  const passes = [(a) => a.state !== 'gossip', () => true];
+  for (const ok of passes) {
+    for (const a of newest) {
+      if (victims.size >= n) break;
+      if (a.abducted || victims.has(a) || !ok(a)) continue;
+      victims.add(a);
+    }
+  }
+  world.animals = world.animals.filter((a) => !victims.has(a));
+}
+
+// reconcile makes the scene's animals of one kind match the herd: the young, the adult males and
+// the adult females, in the herd's proportions and at most VISIBLE[kind] of them in all.
+function reconcile(world, kind, rng) {
+  const h = world.herds[kind];
+  const total = herdTotal(world, kind) - h.leased;
+  const target = Math.min(VISIBLE[kind], total);
+  const youngN = total ? Math.round((target * h.young) / total) : 0;
+  const maleN = Math.round(((target - youngN) * h.males) / Math.max(1, h.females + h.males));
+  const femaleN = target - youngN - maleN;
+
+  const ofKind = () => world.animals.filter((a) => a.kind === kind);
+  const isYoung = (a) => a.young;
+  const isAdultMale = (a) => !a.young && isMale(a);
+  const isAdultFemale = (a) => !a.young && !isMale(a);
+
+  // Young that are too many while adults are too few grow up in place: a male where a bull is
+  // short, otherwise a female.
+  let excess = ofKind().filter(isYoung).length - youngN;
+  let maleShort = maleN - ofKind().filter(isAdultMale).length;
+  let femaleShort = femaleN - ofKind().filter(isAdultFemale).length;
+  for (const a of ofKind().filter(isYoung).reverse()) {
+    if (excess <= 0 || (maleShort <= 0 && femaleShort <= 0)) break;
+    a.young = false;
+    if (maleShort > 0) {
+      a.sex = 'male';
+      maleShort -= 1;
+    } else {
+      a.sex = 'female';
+      femaleShort -= 1;
+    }
+    excess -= 1;
+  }
+
+  // Remove the surplus of each group, then add the missing ones.
+  const groups = [
+    [isYoung, youngN, () => ({ sex: 'female', young: true })],
+    [isAdultMale, maleN, () => ({ sex: 'male' })],
+    [isAdultFemale, femaleN, () => ({ sex: 'female' })],
+  ];
+  for (const [pred, want] of groups) {
+    const group = ofKind().filter(pred);
+    if (group.length > want) dropAnimals(world, group, group.length - want);
+  }
+  for (const [pred, want, opts] of groups) {
+    for (let n = ofKind().filter(pred).length; n < want; n++) {
+      addAnimal(world, kind, rng, opts());
+    }
+  }
 }
 
 // updateAnimals advances every animal whose abducted is false. line(kind) returns the text for a
-// gag of that kind. Cows and chickens age first, those that die this update are removed, and then
-// the adults breed.
+// gag of that kind. The smoke reaction comes first, then the herd events, then the scene is made
+// to match the herds, and then each animal moves.
 export function updateAnimals(world, dt, rng, line) {
-  const animals = world.animals;
-
   // Smoke reaction: the first cow that has not yet noticed the latest cigarette says so. Every
   // cow records the current count, so each cigarette is noticed once.
   const cigarettes = world.stats.cigarettes;
   let smokeSaid = false;
-  for (const a of animals) {
+  for (const a of world.animals) {
     if (a.abducted || a.kind !== 'cow') continue;
     if (world.farmer.state === 'smoke' && cigarettes > a.noticed && !smokeSaid) {
       smokeSaid = true;
@@ -533,10 +692,9 @@ export function updateAnimals(world, dt, rng, line) {
     a.noticed = cigarettes;
   }
 
-  const living = (a) => !a.abducted && a.kind !== 'pig';
-  const dead = new Set(animals.filter((a) => living(a) && age(world, a, dt, line)));
-  if (dead.size > 0) world.animals = world.animals.filter((a) => !dead.has(a));
-  for (const a of world.animals.filter(living)) breed(world, a, dt, rng, line);
+  herdEventsStep(world, rng, line);
+  reconcile(world, 'cow', rng);
+  reconcile(world, 'chicken', rng);
 
   const done = new Set();
   for (const a of world.animals) {
@@ -550,14 +708,19 @@ export function updateAnimals(world, dt, rng, line) {
 
 // spriteRows picks the rows to draw for an animal in its current state and frame.
 function spriteRows(a) {
-  if (!isAdult(a)) return baseRows(a);
+  if (a.young) return baseRows(a);
   if (a.kind === 'cow') {
-    return a.frame === 1 && (a.state === 'walk' || a.state === 'gossip') ? COW_STEP : COW;
+    const walking = a.frame === 1 && (a.state === 'walk' || a.state === 'gossip');
+    if (isMale(a)) return walking ? BULL_STEP : BULL;
+    return walking ? COW_STEP : COW;
   }
   if (a.kind === 'chicken') {
-    if (a.frame === 1 && a.state === 'peck') return CHICKEN_PECK;
-    if (a.frame === 1 && (a.state === 'walk' || a.state === 'panic')) return CHICKEN_STEP;
-    return CHICKEN;
+    const cock = isMale(a);
+    if (a.frame === 1 && a.state === 'peck') return cock ? COCK_PECK : CHICKEN_PECK;
+    if (a.frame === 1 && (a.state === 'walk' || a.state === 'panic')) {
+      return cock ? COCK_STEP : CHICKEN_STEP;
+    }
+    return cock ? COCK : CHICKEN;
   }
   return a.state === 'wallow' || a.state === 'sleep' ? MUDDY_PIG : PIG;
 }

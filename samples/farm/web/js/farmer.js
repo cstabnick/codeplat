@@ -11,7 +11,7 @@ export const SPEED = 28; // units per second when walking
 const WORK_SECONDS = { water: 1.5, harvest: 1.5, feed: 2 };
 const SMOKE_SECONDS = 8;
 const FACE_SECONDS = 0.7;
-const CROP_NAMES = ['carrot', 'corn', 'pumpkin'];
+const CROP_NAMES = ['carrot'];
 
 const HEAD = [
   '....aaaa....',

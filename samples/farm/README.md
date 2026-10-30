@@ -48,6 +48,18 @@ ignored:
 For example, http://127.0.0.1:8088/?seed=42&hour=23&speed=2 starts a seeded
 night at double speed.
 
+## Docker
+
+The `Dockerfile` builds a static binary and runs it alone in an empty image as
+user `nobody`. Inside the container it listens on `0.0.0.0:8088`; publish the
+port on `127.0.0.1` so that only a reverse proxy on the host can reach it:
+
+    docker build -t farm .
+    docker run -d --name farm --restart=unless-stopped \
+      --read-only --cap-drop=ALL --security-opt no-new-privileges \
+      --memory=64m --pids-limit=64 \
+      -p 127.0.0.1:8088:8088 farm
+
 ## Controls
 
 Click an animal to hear what it is really thinking, or click Gary to hear what

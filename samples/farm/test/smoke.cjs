@@ -109,6 +109,23 @@ async function main() {
     if (!(day.t1 > day.t0)) fail(`world.time did not advance: ${day.t0} -> ${day.t1}`);
     if (day.colours < 2) fail(`canvas is one flat colour (${day.colours} sampled colours)`);
     if (day.problems.length) fail(`day page reported:\n  ${day.problems.join('\n  ')}`);
+
+    // The pig's shop: S opens it, and buying a chicken spends coins and adds one.
+    await day.page.keyboard.press('s');
+    if (await day.page.isHidden('#shop')) fail('pressing S did not open the shop');
+    const before = await day.page.evaluate(() => ({
+      coins: window.farm.world.coins,
+      hens: window.farm.world.animals.filter((a) => a.kind === 'chicken').length,
+    }));
+    await day.page.click('#shop-items li:nth-child(2) button');
+    const after = await day.page.evaluate(() => ({
+      coins: window.farm.world.coins,
+      hens: window.farm.world.animals.filter((a) => a.kind === 'chicken').length,
+    }));
+    if (!(after.hens === before.hens + 1 && after.coins < before.coins)) {
+      fail(`buying a chicken: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    }
+    if (day.problems.length) fail(`shop reported:\n  ${day.problems.join('\n  ')}`);
     await day.page.context().close();
 
     // Night page: the U easter egg starts a UFO visit.
@@ -116,8 +133,8 @@ async function main() {
     if (!(night.t1 > night.t0)) fail(`night: world.time did not advance: ${night.t0} -> ${night.t1}`);
     if (night.colours < 2) fail(`night: canvas is one flat colour (${night.colours} sampled colours)`);
     await night.page.keyboard.press('u');
-    const ufoState = await night.page.evaluate(() => window.farm.world.ufo.state);
-    if (ufoState === 'away') fail('night: pressing U did not start a UFO visit');
+    const saucers = await night.page.evaluate(() => window.farm.world.ufos.length);
+    if (saucers === 0) fail('night: pressing U did not start a UFO visit');
     if (night.problems.length) fail(`night page reported:\n  ${night.problems.join('\n  ')}`);
     await night.page.context().close();
 

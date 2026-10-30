@@ -2,10 +2,10 @@
 // and puff, draws them, and draws the heads-up display (title, day and clock, coins, statistics,
 // the latest log entry, and the pause and speed badges). Nothing here runs on import.
 //
-// Sprite letters are PALETTE keys from pixel.js: '4' #ab5236, '6' #c2c3c7, '7' #fff1e8,
-// '8' #ff004d, '9' #ffa300, 'a' #ffec27, 'c' #29adff.
+// Sprite letters are PALETTE keys from pixel.js: '2' #7e2553, '4' #ab5236, '6' #c2c3c7,
+// '7' #fff1e8, '8' #ff004d, '9' #ffa300, 'a' #ffec27, 'c' #29adff, 'd' #83769c.
 
-import { WIDTH, HEIGHT, hourOf } from './state.js';
+import { WIDTH, HEIGHT, hourOf, money, herdSize, capacity, productivity } from './state.js';
 import { drawSprite, drawText, textWidth, drawBubble } from './pixel.js';
 
 const HUD_TEXT = '#fff1e8';
@@ -17,6 +17,7 @@ const BAR_H = 9;
 
 const KNOWN_EFFECTS = new Set([
   'smoke', 'zzz', 'note', 'coin', 'drop', 'feather', 'sparkle', 'heart', 'mud',
+  'milk', 'egg', 'ghost', 'portal',
 ]);
 
 const SPRITES = {
@@ -28,6 +29,11 @@ const SPRITES = {
   sparkle: ['.7.', '777', '.7.'],
   heart: ['88.88', '88888', '88888', '.888.'],
   mud: ['44', '44'],
+  milk: ['.6.', '777', '777'],
+  egg: ['.7.', '777', '777', '.7.'],
+  ghost: ['.777.', '70707', '77777', '7.7.7'],
+  portalA: ['d.d', '.2.', 'd.d'],
+  portalB: ['.d.', 'd2d', '.d.'],
 };
 
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -98,6 +104,19 @@ function drawOne(ctx, e) {
     case 'mud':
       drawSprite(ctx, SPRITES.mud, e.x, e.y);
       break;
+    case 'milk':
+      drawSprite(ctx, SPRITES.milk, e.x, e.y);
+      break;
+    case 'egg':
+      drawSprite(ctx, SPRITES.egg, e.x, e.y);
+      break;
+    case 'ghost':
+      drawSprite(ctx, SPRITES.ghost, e.x, e.y);
+      break;
+    case 'portal':
+      // Flickers between two frames, switching every sixth of a second.
+      drawSprite(ctx, Math.floor(e.age * 6) % 2 === 0 ? SPRITES.portalA : SPRITES.portalB, e.x, e.y);
+      break;
     default:
       break;
   }
@@ -127,24 +146,30 @@ function bar(ctx, y) {
   ctx.globalAlpha = 1;
 }
 
-// drawHud draws the top bar, the bottom bar, and the pause and speed badges.
-export function drawHud(ctx, world) {
+// drawHud draws the top bar, the bottom bar, and the pause and speed badges. rate is the income in
+// coins per second, shown dimmed to the left of the coins.
+export function drawHud(ctx, world, rate = 0) {
   bar(ctx, 0);
   bar(ctx, HEIGHT - BAR_H);
 
-  // Top bar: title, day and clock on the left; coins on the right.
+  // Top bar: title, day and clock on the left; income rate and coins on the right.
   const title = 'GOSSIP ACRES';
   drawText(ctx, title, 2, 2, GOLD);
   drawText(ctx, `DAY ${world.day}  ${formatClock(world)}`, 2 + textWidth(title) + 8, 2, HUD_TEXT);
 
-  const coinsText = `$${world.coins}`;
+  const coinsText = `$${money(world.coins)}`;
   const coinsX = RIGHT - textWidth(coinsText);
   drawText(ctx, coinsText, coinsX, 2, GOLD);
-  drawSprite(ctx, SPRITES.coinFull, coinsX - 2 - 3, 2);
+  const coinSpriteX = coinsX - 2 - 3;
+  drawSprite(ctx, SPRITES.coinFull, coinSpriteX, 2);
+
+  const rateText = `+${rate < 10 ? rate.toFixed(1) : money(rate)}/S`;
+  drawText(ctx, rateText, coinSpriteX - 4 - textWidth(rateText), 2, DIM);
 
   // Bottom bar: the newest log entry on the left, cut to fit; the statistics on the right.
-  const stats = world.stats || {};
-  const statsText = `CIGS ${stats.cigarettes || 0} GOSSIP ${stats.gossip || 0} UFO ${stats.abductions || 0}`;
+  const statsText = `COWS ${herdSize(world, 'cow')}/${capacity(world, 'cow')} `
+    + `HENS ${herdSize(world, 'chicken')}/${capacity(world, 'chicken')} `
+    + `X${productivity(world).toFixed(2)}`;
   const statsX = RIGHT - textWidth(statsText);
   const barY = HEIGHT - BAR_H + 2;
   drawText(ctx, statsText, statsX, barY, DIM);

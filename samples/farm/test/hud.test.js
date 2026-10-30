@@ -11,7 +11,7 @@ import {
   drawBubbles,
   drawHud,
 } from '../web/js/hud.js';
-import { drawBubble, textWidth } from '../web/js/pixel.js';
+import { drawBubble, drawText, textWidth } from '../web/js/pixel.js';
 
 // fills returns every fillRect recorded on ctx as {x, y, w, h, fill, alpha}, where fill is the
 // fillStyle and alpha the globalAlpha in effect at that call.
@@ -177,6 +177,32 @@ test('drawEffects draws mud as a 2x2 brown blob', () => {
   assert.ok(rects.every((r) => r.fill === '#ab5236'));
 });
 
+test('drawEffects draws milk as a 3x3 bottle in palette 6 and 7', () => {
+  const rects = effectRects('milk', 0);
+  assert.deepEqual(bbox(rects), { x: 50, y: 60, w: 3, h: 3 });
+  assert.ok(rects.every((r) => r.fill === '#c2c3c7' || r.fill === '#fff1e8'));
+});
+
+test('drawEffects draws an egg as a 3x4 cream sprite', () => {
+  const rects = effectRects('egg', 0);
+  assert.deepEqual(bbox(rects), { x: 50, y: 60, w: 3, h: 4 });
+  assert.ok(rects.every((r) => r.fill === '#fff1e8'));
+});
+
+test('drawEffects draws a ghost as a 5x4 sprite', () => {
+  const rects = effectRects('ghost', 0);
+  assert.deepEqual(bbox(rects), { x: 50, y: 60, w: 5, h: 4 });
+  assert.ok(rects.length > 0);
+});
+
+test('drawEffects draws the portal as a 3x3 sprite that flickers between two frames', () => {
+  const frameA = effectRects('portal', 0);
+  assert.deepEqual(bbox(frameA), { x: 50, y: 60, w: 3, h: 3 });
+  const frameB = effectRects('portal', 0.2);
+  assert.deepEqual(bbox(frameB), { x: 50, y: 60, w: 3, h: 3 });
+  assert.notDeepEqual(frameA, frameB);
+});
+
 test('drawEffects skips an unknown kind without throwing and leaves globalAlpha at 1', () => {
   const world = createWorld(1);
   puff(world, 'confetti', 20, 20);
@@ -239,12 +265,44 @@ test('drawHud keeps a long log entry clear of the statistics text', () => {
   const ctx = fakeCtx();
   drawHud(ctx, world);
 
-  const statsText = 'CIGS 12 GOSSIP 34 UFO 6';
+  const statsText = 'COWS 4/6 HENS 5/8 X1.00';
   const statsX = 318 - textWidth(statsText);
   const logPixels = fills(ctx).filter((r) => r.fill === '#fff1e8' && r.y >= 171);
   assert.ok(logPixels.length > 0, 'the log entry should be drawn');
   const rightmost = Math.max(...logPixels.map((r) => r.x + r.w - 1));
   assert.ok(rightmost <= statsX - 5, `log ends at ${rightmost}, stats start at ${statsX}`);
+  assert.equal(ctx.globalAlpha, 1);
+});
+
+test('drawHud draws the coins with money formatting, ending at the right edge', () => {
+  const world = createWorld(1);
+  world.coins = 12345.6;
+  const ctx = fakeCtx();
+  drawHud(ctx, world);
+
+  const text = '$12.3K';
+  const coinsX = 318 - textWidth(text);
+  const expected = fakeCtx();
+  drawText(expected, text, coinsX, 2, '#ffec27');
+  const want = fills(expected).map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
+  const got = fills(ctx)
+    .filter((r) => r.fill === '#ffec27' && r.y >= 2 && r.y <= 6 && r.x >= coinsX)
+    .map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }));
+  assert.deepEqual(got, want);
+  assert.equal(Math.max(...got.map((r) => r.x + r.w)), 318);
+});
+
+test('drawHud shows the income rate in dim text left of the coins', () => {
+  const world = createWorld(1);
+  const ctx = fakeCtx();
+  drawHud(ctx, world, 1.64);
+
+  const coinsX = 318 - textWidth('$10');
+  const coinSpriteX = coinsX - 5;
+  const dim = fills(ctx).filter((r) => r.fill === '#c2c3c7' && r.y >= 2 && r.y <= 6);
+  assert.ok(dim.length > 0, 'expected the dim rate text');
+  // '+1.6/S' ends a 4-unit gap before the coin sprite.
+  assert.ok(Math.max(...dim.map((r) => r.x + r.w)) <= coinSpriteX - 4);
   assert.equal(ctx.globalAlpha, 1);
 });
 

@@ -1,8 +1,12 @@
 // The animals: cows that gossip in whispers when Farmer Gary is not looking, chickens that peck and
-// sometimes panic, and a pig that wallows in the mud. Imports only state.js and pixel.js; it
-// touches no window or document on load.
+// sometimes panic, and a pig that wallows in the mud and is secretly a prince from another
+// dimension. Cows and chickens are born small, grow up, have young while there is room, and die
+// of old age. Imports only state.js and pixel.js; it touches no window or document on load.
 
-import { PASTURE, YARD, MUD, farmerSees, isNight, say, logEvent, puff } from './state.js';
+import {
+  PASTURE, YARD, MUD, ADULT_AGE, farmerSees, isNight, isAdult, herdSize, capacity, say, logEvent,
+  puff,
+} from './state.js';
 import { drawSprite, spriteSize } from './pixel.js';
 
 const COW = [
@@ -66,8 +70,48 @@ const MUDDY_PIG = PIG.map((row, r) =>
     .join(''),
 );
 const SHADOW = ['..5555..', '.555555.', '..5555..'];
+const CALF = [
+  '.........6..',
+  '........7770',
+  '.770077777ee',
+  '077007777ee.',
+  '.77777777...',
+  '.7.7...7.7..',
+  '.7.7...7.7..',
+  '.0.0...0.0..',
+];
+const CHICK = [
+  '..aa.',
+  '..a09',
+  'aaaa.',
+  '.9.9.',
+];
+const CROWN = ['a.a.a', 'aaaaa'];
 
-const HEIGHT = { cow: spriteSize(COW).h, chicken: spriteSize(CHICKEN).h, pig: spriteSize(PIG).h };
+// How long each kind lives and how often an adult has young, in seconds: [min, max).
+// Gossip: a hidden pair of cows starts one at GOSSIP_RATE per second, it lasts GOSSIP_SECONDS, and
+// the pair take turns to whisper every GOSSIP_BEAT seconds.
+const GOSSIP_RATE = 0.15;
+const GOSSIP_SECONDS = 7;
+const GOSSIP_BEAT = 2.4;
+
+const LIFE = { cow: [900, 1260], chicken: [540, 720] };
+const BREED = { cow: [150, 240], chicken: [80, 140] };
+const YOUNG = { cow: 'CALF', chicken: 'CHICK' };
+const HEAVEN = { cow: 'PASTURE', chicken: 'COOP' };
+const NAMES = {
+  cow: [
+    'Daisy', 'Bessie', 'Moolinda', 'Clarabelle', 'Buttercup', 'Marigold', 'Dolly', 'Penelope',
+    'Mabel', 'Gertrude', 'Maude', 'Hazel', 'Rosie', 'Butterscotch', 'Milkshake', 'Oreo', 'Pudding',
+    'Biscuit', 'Nutmeg', 'Waffles', 'Moonpie', 'Doris', 'Agnes', 'Moozart', 'Cowlette',
+  ],
+  chicken: [
+    'Henrietta', 'Cluck Norris', 'Eggatha', 'Nugget', 'Pecky', 'Omelette', 'Drumstick', 'Peep',
+    'Yolko Ono', 'Hen Solo', 'Clucky', 'Sunny', 'Scramble', 'Popcorn', 'Goldie', 'Penny', 'Waddles',
+    'Beaky', 'Eggbert', 'Feathers', 'Mother Clucker', 'Pip', 'Beakonce', 'Henny', 'Chickpea',
+    'Dumpling', 'Mrs Peck', 'Sir Cluckington',
+  ],
+};
 
 // Where each kind may stand, inclusive.
 const COW_BOX = {
@@ -88,6 +132,15 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 const feetY = (a) => a.y - a.lift;
 
+// baseRows is the standing sprite for an animal's kind and age.
+function baseRows(a) {
+  if (a.kind === 'cow') return isAdult(a) ? COW : CALF;
+  if (a.kind === 'chicken') return isAdult(a) ? CHICKEN : CHICK;
+  return PIG;
+}
+
+const heightOf = (a) => spriteSize(baseRows(a)).h;
+
 function boxFor(a) {
   if (a.kind === 'cow') return COW_BOX;
   if (a.kind === 'chicken') return CHICKEN_BOX;
@@ -101,7 +154,7 @@ function clampTo(a, box) {
 
 // A bubble whose tail points just above the animal's head.
 function bubble(world, a, text, kind, ttl) {
-  say(world, a.x, feetY(a) - HEIGHT[a.kind] - 1, text, kind, ttl);
+  say(world, a.x, feetY(a) - heightOf(a) - 1, text, kind, ttl);
 }
 
 // stepToward moves a toward (tx, ty) at speed units per second, without going closer than stop
@@ -156,7 +209,7 @@ function startGossip(world, a, dt, rng, line, done) {
       !farmerSees(world, o.x, o.y) &&
       dist(a.x, a.y, o.x, o.y) <= 48,
   );
-  if (!b || !rng.chance(0.35 * dt)) return false;
+  if (!b || !rng.chance(GOSSIP_RATE * dt)) return false;
 
   const first = world.animals.indexOf(a) < world.animals.indexOf(b) ? a : b;
   const second = first === a ? b : a;
@@ -166,8 +219,8 @@ function startGossip(world, a, dt, rng, line, done) {
   b.partner = a.id;
   a.target = null;
   b.target = null;
-  a.timer = 7;
-  b.timer = 7;
+  a.timer = GOSSIP_SECONDS;
+  b.timer = GOSSIP_SECONDS;
   faceEachOther(a, b);
   world.stats.gossip += 1;
   logEvent(world, `${first.name.toUpperCase()} AND ${second.name.toUpperCase()} ARE GOSSIPING`);
@@ -194,7 +247,7 @@ function gossipStep(world, a, b, dt, rng, line) {
       c.facing = world.farmer.x < c.x ? 'left' : 'right';
     }
     bubble(world, lower, line('innocent'), 'speech');
-    puff(world, 'note', higher.x, feetY(higher) - HEIGHT[higher.kind]);
+    puff(world, 'note', higher.x, feetY(higher) - heightOf(higher));
     return;
   }
 
@@ -204,8 +257,8 @@ function gossipStep(world, a, b, dt, rng, line) {
 
   const before = a.timer;
   const after = before - dt;
-  const prevBeat = Math.floor(Math.max(0, 7 - before) / 1.6);
-  const newBeat = Math.floor(Math.min(7, 7 - Math.max(after, 0)) / 1.6);
+  const prevBeat = Math.floor(Math.max(0, GOSSIP_SECONDS - before) / GOSSIP_BEAT);
+  const newBeat = Math.floor(Math.min(GOSSIP_SECONDS, GOSSIP_SECONDS - Math.max(after, 0)) / GOSSIP_BEAT);
   for (let k = prevBeat + 1; k <= newBeat; k++) {
     bubble(world, k % 2 === 0 ? lower : higher, line('gossip'), 'whisper', 2.2);
   }
@@ -311,7 +364,7 @@ function updateChicken(world, a, dt, rng, line) {
       a.state = 'peck';
       a.timer = rng.range(2, 5);
     } else if (rng.chance(0.02 * dt)) {
-      puff(world, 'zzz', a.x, feetY(a) - HEIGHT.chicken);
+      puff(world, 'zzz', a.x, feetY(a) - heightOf(a));
     }
     return;
   }
@@ -358,7 +411,7 @@ function updatePig(world, a, dt, rng, line) {
       a.state = 'wallow';
       a.timer = rng.range(2, 5);
     } else if (rng.chance(0.02 * dt)) {
-      puff(world, 'zzz', a.x, feetY(a) - HEIGHT.pig);
+      puff(world, 'zzz', a.x, feetY(a) - heightOf(a));
     }
     return;
   }
@@ -373,6 +426,9 @@ function updatePig(world, a, dt, rng, line) {
   if (a.state === 'wallow') {
     a.frame = 0;
     if (rng.chance(0.1 * dt)) puff(world, 'mud', a.x, feetY(a));
+    if (rng.chance(0.3 * dt)) {
+      puff(world, 'portal', a.x + rng.range(-8, 8), feetY(a) - rng.range(0, 10), 0, -4, 1.2);
+    }
     if (rng.chance(0.04 * dt)) bubble(world, a, line('pig'), 'thought', 4);
     if (rng.chance(0.05 * dt)) {
       a.target = randomNear(rng, a.x, a.y, 6, PIG_BOX);
@@ -388,8 +444,79 @@ function updatePig(world, a, dt, rng, line) {
   }
 }
 
+// pickName returns a name from NAMES that no living animal has, or a numbered one when all are taken.
+function pickName(world, kind, rng) {
+  const taken = new Set(world.animals.map((a) => a.name));
+  const free = NAMES[kind].filter((n) => !taken.has(n));
+  if (free.length > 0) return rng.pick(free);
+  const base = rng.pick(NAMES[kind]);
+  let n = 2;
+  while (taken.has(`${base} ${n}`)) n += 1;
+  return `${base} ${n}`;
+}
+
+// addAnimal puts a new cow or chicken on the farm and returns it. Without opts.x and opts.y it
+// stands at a random spot in its area; opts.age is its age in seconds, an adult's by default.
+export function addAnimal(world, kind, rng, opts = {}) {
+  const box = kind === 'cow' ? COW_BOX : CHICKEN_BOX;
+  const a = {
+    id: `${kind}-${world.nextAnimal}`,
+    kind,
+    name: pickName(world, kind, rng),
+    x: clamp(opts.x ?? rng.range(box.x0, box.x1), box.x0, box.x1),
+    y: clamp(opts.y ?? rng.range(box.y0, box.y1), box.y0, box.y1),
+    facing: rng.chance(0.5) ? 'right' : 'left',
+    state: kind === 'cow' ? 'graze' : 'peck',
+    target: null,
+    timer: 1,
+    frame: 0,
+    partner: null,
+    noticed: world.stats.cigarettes,
+    lift: 0,
+    abducted: false,
+    age: opts.age ?? ADULT_AGE[kind],
+    life: rng.range(...LIFE[kind]),
+    breed: rng.range(...BREED[kind]),
+  };
+  world.nextAnimal += 1;
+  world.animals.push(a);
+  return a;
+}
+
+// age ages a cow or chicken by dt. It returns true when the animal has died, for the caller to
+// remove.
+function age(world, a, dt, line) {
+  a.age += dt;
+  if (a.age < a.life) return false;
+  world.stats.deaths += 1;
+  bubble(world, a, line('death'), 'speech', 4);
+  puff(world, 'ghost', a.x - 2, feetY(a) - heightOf(a), 0, -8, 3);
+  logEvent(world, `${a.name.toUpperCase()} WENT TO THE BIG ${HEAVEN[a.kind]} IN THE SKY`);
+  return true;
+}
+
+// breed counts down an adult's breeding timer by dt. When it runs out, the adult has young if
+// another adult of its kind is on the ground and the farm has room. The dead of this update are
+// already gone, so they are neither mates nor counted in the herd.
+function breed(world, a, dt, rng, line) {
+  if (!isAdult(a)) return;
+  a.breed -= dt;
+  if (a.breed > 0) return;
+  a.breed = rng.range(...BREED[a.kind]);
+  if (herdSize(world, a.kind) >= capacity(world, a.kind)) return;
+  const mate = world.animals.some((o) => o !== a && o.kind === a.kind && !o.abducted && isAdult(o));
+  if (!mate) return;
+
+  const baby = addAnimal(world, a.kind, rng, { x: a.x + rng.range(-10, 10), y: a.y + rng.range(-4, 4), age: 0 });
+  world.stats.births += 1;
+  puff(world, 'heart', a.x - 2, feetY(a) - heightOf(a) - 4, 0, -6, 1.5);
+  bubble(world, a, line('birth'), 'speech');
+  logEvent(world, `${a.name.toUpperCase()} HAD A ${YOUNG[a.kind]}: ${baby.name.toUpperCase()}`);
+}
+
 // updateAnimals advances every animal whose abducted is false. line(kind) returns the text for a
-// gag of that kind.
+// gag of that kind. Cows and chickens age first, those that die this update are removed, and then
+// the adults breed.
 export function updateAnimals(world, dt, rng, line) {
   const animals = world.animals;
 
@@ -406,8 +533,13 @@ export function updateAnimals(world, dt, rng, line) {
     a.noticed = cigarettes;
   }
 
+  const living = (a) => !a.abducted && a.kind !== 'pig';
+  const dead = new Set(animals.filter((a) => living(a) && age(world, a, dt, line)));
+  if (dead.size > 0) world.animals = world.animals.filter((a) => !dead.has(a));
+  for (const a of world.animals.filter(living)) breed(world, a, dt, rng, line);
+
   const done = new Set();
-  for (const a of animals) {
+  for (const a of world.animals) {
     if (a.abducted || done.has(a.id)) continue;
     if (a.kind === 'cow') updateCow(world, a, dt, rng, line, done);
     else if (a.kind === 'chicken') updateChicken(world, a, dt, rng, line);
@@ -418,6 +550,7 @@ export function updateAnimals(world, dt, rng, line) {
 
 // spriteRows picks the rows to draw for an animal in its current state and frame.
 function spriteRows(a) {
+  if (!isAdult(a)) return baseRows(a);
   if (a.kind === 'cow') {
     return a.frame === 1 && (a.state === 'walk' || a.state === 'gossip') ? COW_STEP : COW;
   }
@@ -434,12 +567,16 @@ function drawAnimal(ctx, a) {
   if (a.kind === 'cow' && a.lift > 0) drawSprite(ctx, SHADOW, a.x - 4, a.y - 1);
 
   const rows = spriteRows(a);
-  const base = HEIGHT[a.kind];
-  const left = a.x - Math.floor(spriteSize(rows).w / 2);
+  const base = heightOf(a);
+  const w = spriteSize(rows).w;
+  const left = a.x - Math.floor(w / 2);
   const flip = a.facing === 'left';
   // A sleeping animal loses its top row and sits one unit lower, with its feet where they were.
-  if (a.state === 'sleep') drawSprite(ctx, rows.slice(1), left, fy - base + 1, flip);
-  else drawSprite(ctx, rows, left, fy - base, flip);
+  const top = a.state === 'sleep' ? fy - base + 1 : fy - base;
+  if (a.state === 'sleep') drawSprite(ctx, rows.slice(1), left, top, flip);
+  else drawSprite(ctx, rows, left, top, flip);
+  // The prince's crown sits between his ears.
+  if (a.kind === 'pig') drawSprite(ctx, CROWN, flip ? left + 1 : left + w - 6, top - 2);
 }
 
 // animalDrawables returns one {y, draw(ctx)} per animal, for the caller to sort by y.

@@ -11,6 +11,11 @@ import {
   logEvent,
   puff,
   DAY_LENGTH,
+  isAdult,
+  herdSize,
+  capacity,
+  productivity,
+  money,
 } from '../web/js/state.js';
 import { fakeCtx } from './fakectx.js';
 
@@ -59,11 +64,50 @@ test('createWorld has the animals, plots and clock from the contract', () => {
   assert.equal(w.time, 0);
   assert.equal(w.day, 1);
   assert.equal(w.clock, 0);
-  assert.deepEqual(w.stats, { cigarettes: 0, gossip: 0, harvests: 0, abductions: 0 });
+  assert.deepEqual(w.stats, {
+    cigarettes: 0, gossip: 0, harvests: 0, abductions: 0, milk: 0, eggs: 0, births: 0, deaths: 0,
+  });
   assert.deepEqual(w.log, []);
   assert.deepEqual(w.bubbles, []);
   assert.deepEqual(w.effects, []);
-  assert.equal(w.ufo.state, 'away');
+  assert.deepEqual(w.ufos, []);
+  assert.equal(w.coins, 10);
+  assert.deepEqual(w.upgrades, { cigs: 0, pasture: 0, coop: 0, portal: 0 });
+});
+
+test('herd helpers: isAdult, herdSize and capacity', () => {
+  const w = createWorld(1);
+  assert.equal(herdSize(w, 'cow'), 4);
+  assert.equal(capacity(w, 'cow'), 6);
+  w.upgrades.pasture = 2;
+  assert.equal(capacity(w, 'cow'), 12);
+  w.upgrades.pasture = 99;
+  assert.equal(capacity(w, 'cow'), 24, 'capped at max');
+  const cow = w.animals[0];
+  cow.age = 59;
+  assert.equal(isAdult(cow), false);
+  cow.age = 60;
+  assert.equal(isAdult(cow), true);
+  assert.equal(isAdult(w.animals.find((a) => a.kind === 'pig')), true);
+});
+
+test('productivity is 1.25 per pack of cigs, doubled by the portal', () => {
+  const w = createWorld(1);
+  near(productivity(w), 1);
+  w.upgrades.cigs = 2;
+  near(productivity(w), 1.5625);
+  w.upgrades.portal = 1;
+  near(productivity(w), 3.125);
+});
+
+test('money: whole coins, then K, M and B with one decimal, rounded down', () => {
+  assert.equal(money(0), '0');
+  assert.equal(money(12.9), '12');
+  assert.equal(money(9999), '9999');
+  assert.equal(money(12345), '12.3K');
+  assert.equal(money(4560000), '4.5M');
+  assert.equal(money(7.89e9), '7.8B');
+  assert.equal(money(-5), '0');
 });
 
 test('advanceTime and hourOf: clock 0 is hour 6, and day and hour roll over', () => {

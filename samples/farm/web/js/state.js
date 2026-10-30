@@ -1,5 +1,5 @@
 // The world model. Every other module reads and writes this state; see the field
-// ownership notes in the issue for which module changes which field.
+// ownership notes in ARCHITECTURE.md for which module changes which field.
 
 export const WIDTH = 320;
 export const HEIGHT = 180;
@@ -20,6 +20,17 @@ export const CROPS = {
   corn:    { grow: 60, value: 5 },
   pumpkin: { grow: 90, value: 12 },
 };
+// ADULT_AGE is the age in seconds at which a cow or chicken grows up: an adult gives milk or eggs
+// and can have young. The pig is a prince and never ages.
+export const ADULT_AGE = { cow: 60, chicken: 40 };
+// HERD is how many of each kind the farm has room for: base, plus step for each pasture or coop
+// upgrade, up to max.
+export const HERD = {
+  cow: { base: 6, step: 3, max: 24, upgrade: 'pasture' },
+  chicken: { base: 8, step: 4, max: 28, upgrade: 'coop' },
+};
+export const CIG_BOOST = 1.25;    // productivity multiplier per pack of cigarettes
+export const PORTAL_BOOST = 2;    // productivity multiplier once the prince's portal is fixed
 
 const BUBBLE_LIMIT = 8;
 const LOG_LIMIT = 5;
@@ -27,6 +38,12 @@ const EFFECT_LIMIT = 120;
 
 // createWorld returns a new world. Same seed, same world.
 export function createWorld(seed) {
+  // Ages, lives and breeding timers are staggered so the first animals do not all grow old together.
+  const life = {
+    'cow-1': [120, 1100, 90], 'cow-2': [300, 1200, 160], 'cow-3': [60, 1000, 220], 'cow-4': [480, 900, 120],
+    'chicken-1': [40, 640, 60], 'chicken-2': [120, 700, 100], 'chicken-3': [200, 600, 80],
+    'chicken-4': [280, 720, 120], 'chicken-5': [360, 660, 140],
+  };
   const animals = [
     { id: 'cow-1', kind: 'cow', name: 'Daisy',      x: 200, y: 122, facing: 'right', state: 'graze' },
     { id: 'cow-2', kind: 'cow', name: 'Bessie',     x: 236, y: 144, facing: 'left',  state: 'graze' },
@@ -47,6 +64,9 @@ export function createWorld(seed) {
     noticed: 0,
     lift: 0,
     abducted: false,
+    age: life[a.id] ? life[a.id][0] : 0,
+    life: life[a.id] ? life[a.id][1] : 0,
+    breed: life[a.id] ? life[a.id][2] : 0,
   }));
 
   const plots = [];
@@ -67,8 +87,11 @@ export function createWorld(seed) {
   return {
     seed,
     time: 0, day: 1, clock: 0, speed: 1, paused: false,
-    coins: 0,
-    stats: { cigarettes: 0, gossip: 0, harvests: 0, abductions: 0 },
+    coins: 10,
+    stats: { cigarettes: 0, gossip: 0, harvests: 0, abductions: 0, milk: 0, eggs: 0, births: 0, deaths: 0 },
+    upgrades: { cigs: 0, pasture: 0, coop: 0, portal: 0 },
+    economy: { milk: 0, eggs: 0, alien: 0 },
+    nextAnimal: 11,
     farmer: { x: 38, y: 84, facing: 'right', state: 'idle', task: null, target: null,
               timer: 2, frame: 0, hidden: false, cigsToday: 0, day: 1 },
     animals,
@@ -76,8 +99,40 @@ export function createWorld(seed) {
     bubbles: [],
     effects: [],
     log: [],
-    ufo: { state: 'away', x: -30, y: 20, targetId: null, timer: 0, lastDay: 0 },
+    ufos: [],
+    ufoLastDay: 0,
   };
+}
+
+// isAdult is true for the pig and for a cow or chicken whose age has reached ADULT_AGE.
+export function isAdult(a) {
+  return a.kind === 'pig' || a.age >= ADULT_AGE[a.kind];
+}
+
+// herdSize counts the living animals of a kind, abducted ones included.
+export function herdSize(world, kind) {
+  return world.animals.filter((a) => a.kind === kind).length;
+}
+
+// capacity is how many animals of a kind the farm has room for now.
+export function capacity(world, kind) {
+  const h = HERD[kind];
+  return Math.min(h.max, h.base + h.step * world.upgrades[h.upgrade]);
+}
+
+// productivity multiplies what the animals make: milk and eggs. Alien pay is a flat rate.
+export function productivity(world) {
+  const u = world.upgrades;
+  return CIG_BOOST ** u.cigs * (u.portal ? PORTAL_BOOST : 1);
+}
+
+// money formats an amount of coins for the 3x5 font: whole coins below 10000, then 12.3K, 4.5M, 6.7B.
+export function money(n) {
+  const v = Math.max(0, n);
+  if (v < 1e4) return String(Math.floor(v));
+  if (v < 1e6) return `${(Math.floor(v / 100) / 10).toFixed(1)}K`;
+  if (v < 1e9) return `${(Math.floor(v / 1e5) / 10).toFixed(1)}M`;
+  return `${(Math.floor(v / 1e8) / 10).toFixed(1)}B`;
 }
 
 // setClock derives day and clock from world.time.
@@ -154,7 +209,8 @@ export function logEvent(world, text) {
 }
 
 // puff adds an effect {kind, x, y, vx, vy, ttl, age: 0} and keeps at most 120 effects (drops oldest).
-// kinds: 'smoke', 'zzz', 'note', 'coin', 'drop', 'feather', 'sparkle', 'heart', 'mud'.
+// kinds: 'smoke', 'zzz', 'note', 'coin', 'drop', 'feather', 'sparkle', 'heart', 'mud', 'milk',
+// 'egg', 'ghost', 'portal'.
 export function puff(world, kind, x, y, vx = 0, vy = -6, ttl = 1.5) {
   world.effects.push({ kind, x, y, vx, vy, ttl, age: 0 });
   while (world.effects.length > EFFECT_LIMIT) world.effects.shift();
